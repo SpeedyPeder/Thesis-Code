@@ -1,5 +1,5 @@
 name = "SinFVM"
-uuid = "3f5e8c72-2b6a-4f91-9d9b-5a8c0f3b6e2c"
+uuid = "b1b1e7f1-7c4e-4e9d-98e9-3d92f53f0001"
 version = "0.1.0"
 
 [deps]
