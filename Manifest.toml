@@ -2,7 +2,7 @@
 
 julia_version = "1.12.4"
 manifest_format = "2.0"
-project_hash = "aa40db1bb785a41cdbb6c07c3ab75221aac98dcb"
+project_hash = "965a275dcd879f2555dc677e99c7b18bee8eca06"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -2843,6 +2843,14 @@ git-tree-sha1 = "749a2b719ec7f34f280c0d97ac3dab5c89818631"
 uuid = "47aef6b3-ad0c-573a-a1e2-d07658019622"
 version = "1.5.1"
 
+[[deps.SinFVM]]
+deps = ["Adapt", "ArchGDAL", "BenchmarkTools", "CSV", "CUDA", "CairoMakie", "ColorSchemes", "Coverage", "Cthulhu", "Documenter", "ForwardDiff", "GLMakie", "Images", "JLD2", "KernelAbstractions", "LazyArtifacts", "Literate", "Logging", "Makie", "Meshes", "NPZ", "Optim", "Parameters", "Plots", "Polynomials", "PrettyTables", "Profile", "ProfileView", "ProgressBars", "ProgressMeter", "PyCall", "PyPlot", "Revise", "StaticArrays", "Symbolics", "Test"]
+git-tree-sha1 = "2c9e4103a8f0190137f7e02f403fab0789e0b772"
+repo-rev = "PederVaarheim"
+repo-url = "https://github.com/SpeedyPeder/SinFVM.jl"
+uuid = "3f5e8c72-2b6a-4f91-9d9b-5a8c0f3b6e2c"
+version = "0.1.0"
+
 [[deps.Sixel]]
 deps = ["Dates", "FileIO", "ImageCore", "IndirectArrays", "OffsetArrays", "REPL", "libsixel_jll"]
 git-tree-sha1 = "0494aed9501e7fb65daba895fb7fd57cc38bc743"
@@ -3121,6 +3129,12 @@ version = "1.11.0"
 git-tree-sha1 = "43044b737fa70bc12f6105061d3da38f881a3e3c"
 uuid = "b718987f-49a8-5099-9789-dcd902bef87d"
 version = "1.0.2"
+
+[[deps.Thesis-Code]]
+deps = ["Adapt", "ArchGDAL", "BenchmarkTools", "CSV", "CUDA", "CairoMakie", "ColorSchemes", "Coverage", "Cthulhu", "Documenter", "ForwardDiff", "GLMakie", "Images", "JLD2", "KernelAbstractions", "LazyArtifacts", "Literate", "Logging", "Makie", "Meshes", "NPZ", "Optim", "Parameters", "Plots", "Polynomials", "PrettyTables", "Profile", "ProfileView", "ProgressBars", "ProgressMeter", "PyCall", "PyPlot", "Revise", "StaticArrays", "Symbolics", "Test"]
+path = "."
+uuid = "b1b1e7f1-7c4e-4e9d-98e9-3d92f53f0001"
+version = "0.0.0"
 
 [[deps.ThreadingUtilities]]
 deps = ["ManualMemory"]
