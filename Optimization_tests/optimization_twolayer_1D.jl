@@ -1,679 +1,203 @@
-# Copyright (c) 2024 SINTEF AS
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# ============================================================
+# Constant-interface optimization — 1D two-layer SWE
+# Optimizes only scalar w0 with bounds B < w0 < ε.
+# ============================================================
 
 using SinFVM, StaticArrays, ForwardDiff, Optim, Parameters, CairoMakie
 
-# ---------------------------------------------------------------------------
-# Global settings
-# ---------------------------------------------------------------------------
-
 const DESING_KAPPA = 1e-4
-
-save_dir = raw"C:\Users\peder\OneDrive - NTNU\År 5\Masteroppgave\Optimization"
-mkpath(save_dir)
-
-# ---------------------------------------------------------------------------
-# Configuration:
-# sharp dam-break in h1, constant interface parameter w0 everywhere
-# ---------------------------------------------------------------------------
-
+const EPS_CUT = 1e-4
 const NX = 64
-const DOMAIN_XMIN = 0.0
-const DOMAIN_XMAX = 100.0
-const X_DAM = 50.0
-
+const XMIN, XMAX, X_DAM = 0.0, 100.0, 50.0
 const T_END = 20.0
-const H1_LEFT = 1.0
-const H1_RIGHT = 0.20
-const W0_TRUE = 0.10
-
-# Observe most/all of the domain
-const CELL_INDICES = collect(1:NX)
+const H1_LEFT, H1_RIGHT = 1.0, 0.20
+const W0_TRUE, W0_INIT = 0.10, 0.25
 const OBS_TIMES = [2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0]
+const CELL_INDICES = collect(1:NX)
+const W_EPS, W_U1, W_U2 = 0.0, 1, 0.0
+const SAVE_DIR = raw"C:\Users\peder\OneDrive - NTNU\År 5\Masteroppgave\Optimization"
+mkpath(SAVE_DIR)
 
-# Weighted misfit only
-const W_EPS, W_U1, W_U2 = 0.1, 0.01, 0.01
+const B0 = 0.0
+const EPS_LEFT_TRUE  = H1_LEFT  + W0_TRUE
+const EPS_RIGHT_TRUE = H1_RIGHT + W0_TRUE
+const W0_MIN = B0 + EPS_CUT
+const W0_MAX = min(EPS_LEFT_TRUE, EPS_RIGHT_TRUE) - EPS_CUT
 
-# Scalar bounds for optimization
-const W0_MIN, W0_MAX = 1e-4, 1.0
-
-# ---------------------------------------------------------------------------
-# Simulator factory
-# ---------------------------------------------------------------------------
-
-function setup_twolayer_simulator(;
-    backend=SinFVM.make_cpu_backend(),
-    w0,
-    h10,
-    init_type::Symbol = :sharp_dam,
-    x_dam = X_DAM,
-    transition_width = 6.0,
-    h1_right = H1_RIGHT,
-    w_right = w0,   # constant interface everywhere by default
-)
-    TT = promote_type(typeof(w0), typeof(h10), typeof(x_dam),
-                      typeof(transition_width), typeof(h1_right), typeof(w_right))
-
-    w0 = TT(w0)
-    h10 = TT(h10)
-    x_dam = TT(x_dam)
-    transition_width = TT(transition_width)
-    h1_right = TT(h1_right)
-    w_right = TT(w_right)
-
-    grid = SinFVM.CartesianGrid(
-        NX;
-        gc=2,
-        boundary=SinFVM.WallBC(),
-        extent=[DOMAIN_XMIN DOMAIN_XMAX],
-    )
-
+function setup_sim(; backend=SinFVM.make_cpu_backend(), w0)
+    T = typeof(w0)
+    grid = SinFVM.CartesianGrid(NX; gc=2, boundary=SinFVM.WallBC(), extent=[XMIN XMAX])
     x = SinFVM.cell_centers(grid)
-    B = SinFVM.ConstantBottomTopography(zero(TT))
+    B = SinFVM.ConstantBottomTopography(T(B0))
 
-    eq = SinFVM.TwoLayerShallowWaterEquations1D(
-        B;
-        ρ1=TT(0.98),
-        ρ2=TT(1.00),
-        g=TT(9.81),
-        depth_cutoff=TT(1e-4),
-        desingularizing_kappa=TT(DESING_KAPPA),
-    )
-
+    eq = SinFVM.TwoLayerShallowWaterEquations1D(B; ρ1=T(0.98), ρ2=T(1.0), g=T(9.81),
+        depth_cutoff=T(EPS_CUT), desingularizing_kappa=T(DESING_KAPPA))
     rec = SinFVM.LinearLimiterReconstruction(SinFVM.MinmodLimiter(1))
-    flux = SinFVM.PathConservativeCentralUpwind(eq)
-
-    cs = SinFVM.ConservedSystem(
-        backend,
-        rec,
-        flux,
-        eq,
-        grid,
-        [SinFVM.SourceTermBottom(), SinFVM.SourceTermNonConservative()],
-    )
-
+    cs = SinFVM.ConservedSystem(backend, rec, SinFVM.PathConservativeCentralUpwind(eq), eq, grid,
+        [SinFVM.SourceTermBottom(), SinFVM.SourceTermNonConservative()])
     sim = SinFVM.Simulator(backend, cs, SinFVM.RungeKutta2(), grid; cfl=0.1)
 
-    ε_cut = TT(1e-4)
+    w = clamp(T(w0), T(W0_MIN), T(W0_MAX))
 
     initial = map(x) do xi
-        if init_type == :sharp_dam
-            h1 = xi < x_dam ? h10 : max(h1_right, ε_cut)
-            w  = xi < x_dam ? w0  : max(w_right, ε_cut)
-
-        elseif init_type == :smooth_dam
-            s = (one(TT) + tanh((x_dam - xi) / transition_width)) / 2
-            h1 = h1_right + (h10 - h1_right) * s
-            w  = w_right  + (w0  - w_right)  * s
-            h1 = max(h1, ε_cut)
-            w  = max(w, ε_cut)
-
-        else
-            error("Unknown init_type = $init_type. Use :sharp_dam or :smooth_dam")
-        end
-
-        @SVector([h1, zero(TT), w, zero(TT)])
+        ε0 = xi < X_DAM ? T(EPS_LEFT_TRUE) : T(EPS_RIGHT_TRUE)
+        h1 = max(ε0 - w, T(EPS_CUT))
+        h2 = max(w - T(B0), T(EPS_CUT))
+        @SVector [h1, zero(T), h2 + T(B0), zero(T)]
     end
 
     SinFVM.set_current_state!(sim, initial)
-    sim
+    return sim
 end
 
-# ---------------------------------------------------------------------------
-# Observables and reconstruction
-# ---------------------------------------------------------------------------
+#Desingularization
+smooth_positive(h, κ) = 0.5 * (h + sqrt(h^2 + κ^2))
+smooth_velocity(h, q, κ) = q / smooth_positive(h, κ)
 
-bathymetry_values(simulator, ::Type{T}) where {T} =
-    fill(zero(T), length(SinFVM.cell_centers(simulator.grid)))
-
-function desingularize(h, κ)
-    copysign(one(h), h) * max(abs(h), min(h^2 / (2 * κ) + κ / 2, κ))
-end
-
-desingularize(h, momentum, κ) = momentum / desingularize(h, κ)
-
-function observable_fields(simulator)
-    st = SinFVM.current_interior_state(simulator)
-    Tstate = eltype(st.h1)
-    κ = Tstate(DESING_KAPPA)
-    Bvals = bathymetry_values(simulator, Tstate)
-
+function obs_fields(sim)
+    st = SinFVM.current_interior_state(sim)
+    T = eltype(st.h1); κ = T(DESING_KAPPA); B = fill(T(B0), length(st.h1))
     h1, q1, w, q2 = st.h1, st.q1, st.w, st.q2
-    h2 = w .- Bvals
-    ε = h1 .+ w
-
-    u1 = desingularize.(h1, q1, κ)
-    u2 = desingularize.(h2, q2, κ)
-
-    (; ε, u1, u2, w, Bvals)
+    h2 = w .- B
+    return (; ε=h1 .+ w, w, B, u1=smooth_velocity.(h1, q1, κ), u2=smooth_velocity.(h2, q2, κ))
 end
 
-reconstruct_from_observables(ε, u1, u2, w, B) = (;
-    h1 = ε .- w,
-    h2 = w .- B,
-    q1 = (ε .- w) .* u1,
-    q2 = (w .- B) .* u2,
-)
-
-# ---------------------------------------------------------------------------
-# Observation callback
-# ---------------------------------------------------------------------------
-
-@with_kw mutable struct ObservableRecorder{VT,IT,OT}
-    obs_times::VT
-    cell_indices::IT
-    next_obs::Int = 1
-    data::Vector{OT} = OT[]
+@with_kw mutable struct Recorder{VT,IT,OT}
+    obs_times::VT; cell_indices::IT; next_obs::Int = 1; data::Vector{OT} = OT[]
 end
 
-function (cb::ObservableRecorder)(time, simulator)
+function (r::Recorder)(time, sim)
     t = ForwardDiff.value(time)
-
-    while cb.next_obs <= length(cb.obs_times) && t + 1e-12 >= cb.obs_times[cb.next_obs]
-        obs = observable_fields(simulator)
-        for i in cb.cell_indices
-            push!(cb.data, obs.ε[i])
-            push!(cb.data, obs.u1[i])
-            push!(cb.data, obs.u2[i])
+    while r.next_obs <= length(r.obs_times) && t + 1e-12 >= r.obs_times[r.next_obs]
+        o = obs_fields(sim)
+        for i in r.cell_indices
+            push!(r.data, o.ε[i]); push!(r.data, o.u1[i]); push!(r.data, o.u2[i])
         end
-        cb.next_obs += 1
+        r.next_obs += 1
     end
 end
 
-# ---------------------------------------------------------------------------
-# Forward solve returning observable data vector
-# ---------------------------------------------------------------------------
-
-function simulate_observations(; t_end, w0, h10, obs_times, cell_indices)
-    ADType = promote_type(typeof(w0), typeof(h10))
-
-    sim = setup_twolayer_simulator(
-        backend=SinFVM.make_cpu_backend(ADType),
-        w0=ADType(w0),
-        h10=ADType(h10),
-        init_type=:sharp_dam,
-        x_dam=ADType(X_DAM),
-        transition_width=ADType(6.0),
-        h1_right=ADType(H1_RIGHT),
-        w_right=ADType(w0),   # constant interface everywhere
-    )
-
-    recorder = ObservableRecorder(
-        obs_times=obs_times,
-        cell_indices=cell_indices,
-        data=ADType[],
-    )
-
-    SinFVM.simulate_to_time(sim, t_end; callback=recorder)
-    @assert recorder.next_obs == length(obs_times) + 1 "Not all observation times were recorded"
-    recorder.data
+function simulate_obs(w0)
+    T = typeof(w0)
+    sim = setup_sim(backend=SinFVM.make_cpu_backend(T), w0=T(w0))
+    rec = Recorder(obs_times=OBS_TIMES, cell_indices=CELL_INDICES, data=T[])
+    SinFVM.simulate_to_time(sim, T(T_END); callback=rec)
+    @assert rec.next_obs == length(OBS_TIMES) + 1 "Not all observation times were recorded"
+    return rec.data
 end
 
-# ---------------------------------------------------------------------------
-# Twin experiment setup
-# ---------------------------------------------------------------------------
+const EXACT_OBS = simulate_obs(W0_TRUE)
+const NTRIP = length(EXACT_OBS) ÷ 3
+const S_EPS, S_U1, S_U2 = sqrt(W_EPS / NTRIP), sqrt(W_U1 / NTRIP), sqrt(W_U2 / NTRIP)
 
-const EXACT_OBS = simulate_observations(
-    t_end=T_END,
-    w0=W0_TRUE,
-    h10=H1_LEFT,
-    obs_times=OBS_TIMES,
-    cell_indices=CELL_INDICES,
-)
-
-println("Generated synthetic exact observations:")
-println("  W0_TRUE       = $W0_TRUE")
-println("  H1_LEFT       = $H1_LEFT")
-println("  H1_RIGHT      = $H1_RIGHT")
-println("  n_cells_obs   = $(length(CELL_INDICES))")
-println("  n_observables = $(length(EXACT_OBS))")
-
-# ---------------------------------------------------------------------------
-# Cost function: weighted misfit only
-# ---------------------------------------------------------------------------
-
-function raw_cost(w0)
-    pred = simulate_observations(
-        t_end=T_END,
-        w0=w0,
-        h10=H1_LEFT,
-        obs_times=OBS_TIMES,
-        cell_indices=CELL_INDICES,
-    )
-
-    J = zero(eltype(pred))
+function residual_vector(wvec)
+    pred = simulate_obs(wvec[1])
+    T = eltype(pred); r = similar(pred)
     @inbounds for k in 1:3:length(pred)
-        dε  = pred[k]   - EXACT_OBS[k]
-        du1 = pred[k+1] - EXACT_OBS[k+1]
-        du2 = pred[k+2] - EXACT_OBS[k+2]
-        J += 0.5 * (W_EPS * dε^2 + W_U1 * du1^2 + W_U2 * du2^2)
+        r[k]   = T(S_EPS) * (pred[k]   - EXACT_OBS[k])
+        r[k+1] = T(S_U1)  * (pred[k+1] - EXACT_OBS[k+1])
+        r[k+2] = T(S_U2)  * (pred[k+2] - EXACT_OBS[k+2])
     end
-    return J
+    return r
 end
 
-σ(z) = inv(one(z) + exp(-z))
-to_w0(z) = W0_MIN + (W0_MAX - W0_MIN) * σ(z)
-from_w0(w) = log((w - W0_MIN) / (W0_MAX - w))
+cost(wvec) = 0.5 * sum(abs2, residual_vector(wvec))
+grad!(g, wvec) = ForwardDiff.gradient!(g, cost, wvec)
 
-function cost_function(zvec)
-    w0 = to_w0(zvec[1])
-    J = raw_cost(w0)
-
-    if J isa ForwardDiff.Dual
-        @assert all(.!isnan.(J.partials)) "NaN in gradient"
-    end
-
-    return J
+@with_kw mutable struct History
+    iter::Vector{Int}=Int[]; w0::Vector{Float64}=Float64[]; J::Vector{Float64}=Float64[]
 end
 
-grad!(storage, zvec) = ForwardDiff.gradient!(storage, cost_function, zvec)
+optim_iter(s) = hasproperty(s,:iteration) ? Int(s.iteration) : hasproperty(s,:pseudo_iteration) ? Int(s.pseudo_iteration) : 0
+optim_x(s) = hasproperty(s,:x) ? s.x : Optim.minimizer(s)
+optim_val(s, x) = hasproperty(s,:value) ? Float64(s.value) : hasproperty(s,:f_x) ? Float64(s.f_x) : Float64(cost(x))
 
-# ---------------------------------------------------------------------------
-# Optimization history storage
-# ---------------------------------------------------------------------------
 
-@with_kw mutable struct OptimizationHistory
-    iter::Vector{Int} = Int[]
-    z::Vector{Float64} = Float64[]
-    w0::Vector{Float64} = Float64[]
-    J::Vector{Float64} = Float64[]
-end
+function history_callback(hist)
+    first_callback = Ref(true)
 
-function optim_iteration(state)
-    if hasproperty(state, :iteration)
-        return Int(getproperty(state, :iteration))
-    elseif hasproperty(state, :pseudo_iteration)
-        return Int(getproperty(state, :pseudo_iteration))
-    else
-        return 0
-    end
-end
+    return s -> begin
+        x = optim_x(s)
 
-function optim_state_x(state)
-    if hasproperty(state, :x)
-        return getproperty(state, :x)
-    else
-        error("Could not find parameter vector in Optim state.")
-    end
-end
-
-function optim_state_value(state, w0)
-    if hasproperty(state, :value)
-        return Float64(getproperty(state, :value))
-    elseif hasproperty(state, :f_x)
-        return Float64(getproperty(state, :f_x))
-    else
-        return Float64(raw_cost(w0))
-    end
-end
-
-function make_history_callback(history::OptimizationHistory)
-    last_iter = Ref(-1)
-
-    function cb(state)
-        k = optim_iteration(state)
-
-        if k == last_iter[]
-            return false
+        # Skip duplicate initial callback from Optim/Fminbox
+        if first_callback[]
+            first_callback[] = false
+            if isapprox(Float64(x[1]), hist.w0[end]; atol=1e-14)
+                return false
+            end
         end
-        last_iter[] = k
 
-        xstate = optim_state_x(state)
-        z = Float64(xstate[1])
-        w0 = Float64(to_w0(z))
-        J = optim_state_value(state, w0)
+        # Continue from last stored iteration
+        k = hist.iter[end] + 1
 
-        push!(history.iter, k)
-        push!(history.z, z)
-        push!(history.w0, w0)
-        push!(history.J, J)
-
+        push!(hist.iter, k)
+        push!(hist.w0, Float64(x[1]))
+        push!(hist.J, optim_val(s, x))
         return false
     end
-
-    return cb
 end
 
-# ---------------------------------------------------------------------------
-# Optimization: LBFGS on unconstrained variable z
-# ---------------------------------------------------------------------------
+hist = History()
+push!(hist.iter, 0); push!(hist.w0, W0_INIT); push!(hist.J, Float64(cost([W0_INIT])))
 
-initial_guess_w0 = 0.40
-initial_guess = [from_w0(initial_guess_w0)]
+result = optimize(cost, grad!, [W0_MIN], [W0_MAX], [W0_INIT],
+    Fminbox(LBFGS(; m=5)),
+    Optim.Options(show_trace=true, show_every=1, iterations=30, g_tol=1e-8,
+        allow_f_increases=false, callback=history_callback(hist)))
 
-history = OptimizationHistory()
-push!(history.iter, 0)
-push!(history.z, Float64(initial_guess[1]))
-push!(history.w0, Float64(initial_guess_w0))
-push!(history.J, Float64(raw_cost(initial_guess_w0)))
-
-opts = Optim.Options(
-    store_trace=true,
-    show_trace=true,
-    show_every=1,
-    iterations=20,
-    g_tol=1e-8,
-    f_abstol=1e-10,
-    x_abstol=1e-10,
-    allow_f_increases=false,
-    callback=make_history_callback(history),
-)
-
-result = optimize(cost_function, grad!, initial_guess,  LBFGS(; m=5), opts)
-
-z_opt = Optim.minimizer(result)[1]
-w_opt = to_w0(z_opt)
-final_cost = raw_cost(w_opt)
-
+w_opt = Optim.minimizer(result)[1]
 println("\n=== Optimization complete ===")
-println("True w0        = $(round(W0_TRUE; digits=10))")
-println("Recovered w0   = $(round(w_opt; digits=10))")
-println("Absolute error = $(round(abs(w_opt - W0_TRUE); digits=12))")
-println("Final raw cost = $(round(final_cost; digits=16))")
+println("Bounds       = [$W0_MIN, $W0_MAX]")
+println("True w0      = ", W0_TRUE)
+println("Recovered w0 = ", w_opt)
+println("Abs. error   = ", abs(w_opt - W0_TRUE))
+println("Final cost   = ", cost([w_opt]))
 
-# ---------------------------------------------------------------------------
-# Plot helpers
-# ---------------------------------------------------------------------------
-
-function plot_elevation_fields!(
-    ax,
-    x,
-    ε,
-    w,
-    B;
-    legend_position=:lt,
-    legend_orientation=:vertical,
-    legend_labelsize=16,
-)
-    lines!(ax, x, ε, linewidth=2, label="ε")
-    lines!(ax, x, w, linewidth=2, linestyle=:dash, label="w")
-    lines!(ax, x, B, linewidth=2, label="B")   # solid line for B
-
-    axislegend(
-        ax;
-        position=legend_position,
-        orientation=legend_orientation,
-        labelsize=legend_labelsize,
-        patchsize=(18, 10),
-        rowgap=4,
-        colgap=8,
-        framevisible=true,
-    )
+function snapshot(w0; label="", t=T_END)
+    sim = setup_sim(w0=Float64(w0)); x = collect(SinFVM.cell_centers(sim.grid))
+    SinFVM.simulate_to_time(sim, t)
+    o = obs_fields(sim)
+    return (; x, ε=collect(o.ε), w=collect(o.w), B=collect(o.B), u1=collect(o.u1), u2=collect(o.u2), label, t)
 end
 
-function plot_velocity_fields!(
-    ax,
-    x,
-    u1,
-    u2;
-    legend_position=:lt,
-    legend_orientation=:vertical,
-    legend_labelsize=16,
-)
-    lines!(ax, x, u1, linewidth=2, label="u1")
-    lines!(ax, x, u2, linewidth=2, label="u2")
+add_elev!(ax, s) = (lines!(ax,s.x,s.ε,label="ε"); lines!(ax,s.x,s.w,linestyle=:dash,label="w"); lines!(ax,s.x,s.B,label="B"); axislegend(ax,position=:lb))
+add_vel!(ax, s) = (lines!(ax,s.x,s.u1,label="u₁"); lines!(ax,s.x,s.u2,label="u₂"); axislegend(ax,position=:lt))
 
-    axislegend(
-        ax;
-        position=legend_position,
-        orientation=legend_orientation,
-        labelsize=legend_labelsize,
-        patchsize=(18, 10),
-        rowgap=4,
-        colgap=8,
-        framevisible=true,
-    )
-end
+snaps = [snapshot(W0_INIT; label="initial", t=0.0), snapshot(W0_TRUE; label="synthetic", t=T_END), snapshot(w_opt; label="optimized", t=T_END)]
 
-# ---------------------------------------------------------------------------
-# Diagnostic snapshots for plotting
-# ---------------------------------------------------------------------------
+fig = Figure(size=(1500,1100), fontsize=20)
+ax0 = Axis(fig[1,1:2], title="Convergence of constant interface parameter w₀", xlabel="iteration", ylabel="w₀")
+lines!(ax0, hist.iter, hist.w0, label="recovered w₀"); scatter!(ax0, hist.iter, hist.w0)
+hlines!(ax0, [W0_TRUE], linestyle=:dash, label="true w₀"); axislegend(ax0, position=:rt)
 
-function snapshot(w0; h10=H1_LEFT, label="", t_end=T_END)
-    sim = setup_twolayer_simulator(
-        backend=SinFVM.make_cpu_backend(),
-        w0=Float64(w0),
-        h10=Float64(h10),
-        init_type=:sharp_dam,
-        x_dam=Float64(X_DAM),
-        transition_width=6.0,
-        h1_right=Float64(H1_RIGHT),
-        w_right=Float64(w0),   # constant interface everywhere
-    )
-
-    x = collect(SinFVM.cell_centers(sim.grid))
-    SinFVM.simulate_to_time(sim, t_end)
-    obs = observable_fields(sim)
-
-    ε  = collect(obs.ε)
-    u1 = collect(obs.u1)
-    u2 = collect(obs.u2)
-    w  = collect(obs.w)
-    B  = collect(obs.Bvals)
-
-    rec = reconstruct_from_observables(ε, u1, u2, w, B)
-    h1 = collect(rec.h1)
-    h2 = collect(rec.h2)
-    q1 = collect(rec.q1)
-    q2 = collect(rec.q2)
-
-    (; x, B, w, ε, u1, u2, h1, h2, q1, q2, label, t_end)
-end
-
-snap_ic  = snapshot(W0_TRUE; label="initial condition", t_end=0.0)
-snap_syn = snapshot(W0_TRUE; label="synthetic", t_end=T_END)
-snap_opt = snapshot(w_opt;   label="optimized", t_end=T_END)
-
-# ---------------------------------------------------------------------------
-# Animation of optimization iterates
-# ---------------------------------------------------------------------------
-
-function animate_iteration_updates(
-    history::OptimizationHistory;
-    t_end=T_END,
-    filename="optimization_iterations.mp4",
-    framerate=2,
-)
-    snaps = [
-        snapshot(w0; label="iter $(k)", t_end=t_end)
-        for (k, w0) in zip(history.iter, history.w0)
-    ]
-
-    x = snaps[1].x
-
-    elev_min = minimum(vcat([vcat(sn.ε, sn.w, sn.B) for sn in snaps]...))
-    elev_max = maximum(vcat([vcat(sn.ε, sn.w, sn.B) for sn in snaps]...))
-    vel_min  = minimum(vcat([vcat(sn.u1, sn.u2) for sn in snaps]...))
-    vel_max  = maximum(vcat([vcat(sn.u1, sn.u2) for sn in snaps]...))
-
-    pad_elev = 0.05 * max(elev_max - elev_min, 1e-8)
-    pad_vel  = 0.05 * max(vel_max - vel_min, 1e-8)
-
-    ε_obs  = Observable(snaps[1].ε)
-    w_obs  = Observable(snaps[1].w)
-    B_obs  = Observable(snaps[1].B)
-    u1_obs = Observable(snaps[1].u1)
-    u2_obs = Observable(snaps[1].u2)
-
-    current_iter_obs = Observable(history.iter[1])
-    current_w0_obs   = Observable(history.w0[1])
-    current_k_idx    = Observable(1)
-
-    fig = Figure(size=(1500, 900), fontsize=22)
-
-    title_text = @lift "Optimization iteration $current_iter_obs   |   recovered w0 = $(round($current_w0_obs; digits=8))   |   true w0 = $(round(W0_TRUE; digits=8))"
-    Label(fig[1, 1:2], title_text, fontsize=24)
-
-    ax_eps = Axis(
-        fig[2, 1],
-        title="Free surface, interface and bathymetry at t=$(t_end)",
-        xlabel="x",
-        ylabel="elevation",
-    )
-    ax_u = Axis(
-        fig[2, 2],
-        title="Measured velocities at t=$(t_end)",
-        xlabel="x",
-        ylabel="velocity",
-    )
-    ax_w0 = Axis(
-        fig[3, 1:2],
-        title="Convergence of w0",
-        xlabel="iteration",
-        ylabel="w0",
-    )
-
-    lines!(ax_w0, history.iter, history.w0, linewidth=2, label="recovered w0")
-    scatter!(ax_w0, history.iter, history.w0, markersize=10)
-    lines!(ax_w0, history.iter, fill(W0_TRUE, length(history.iter)), linewidth=2, linestyle=:dash, label="true w0")
-
-    marker_x = @lift [history.iter[$current_k_idx]]
-    marker_y = @lift [history.w0[$current_k_idx]]
-    scatter!(ax_w0, marker_x, marker_y, markersize=18, label="current iterate")
-
-    axislegend(ax_w0, position=:rb)
-
-    ylo = min(minimum(history.w0), W0_TRUE)
-    yhi = max(maximum(history.w0), W0_TRUE)
-    pady = 0.08 * max(yhi - ylo, 1e-8)
-    ylims!(ax_w0, ylo - pady, yhi + pady)
-
-    lines!(ax_eps, x, ε_obs, linewidth=2, label="ε")
-    lines!(ax_eps, x, w_obs, linewidth=2, linestyle=:dash, label="w")
-    lines!(ax_eps, x, B_obs, linewidth=2, label="B")
-    axislegend(
-        ax_eps;
-        position=:lt,
-        orientation=:horizontal,
-        labelsize=15,
-        patchsize=(18, 10),
-        rowgap=4,
-        colgap=8,
-        framevisible=true,
-    )
-    ylims!(ax_eps, elev_min - pad_elev, elev_max + pad_elev)
-
-    lines!(ax_u, x, u1_obs, linewidth=2, label="u1")
-    lines!(ax_u, x, u2_obs, linewidth=2, label="u2")
-    axislegend(
-        ax_u;
-        position=:lt,
-        orientation=:horizontal,
-        labelsize=15,
-        patchsize=(18, 10),
-        rowgap=4,
-        colgap=8,
-        framevisible=true,
-    )
-    ylims!(ax_u, vel_min - pad_vel, vel_max + pad_vel)
-
-    record(fig, filename, eachindex(snaps); framerate=framerate) do i
-        sn = snaps[i]
-        ε_obs[] = sn.ε
-        w_obs[] = sn.w
-        B_obs[] = sn.B
-        u1_obs[] = sn.u1
-        u2_obs[] = sn.u2
-
-        current_iter_obs[] = history.iter[i]
-        current_w0_obs[] = history.w0[i]
-        current_k_idx[] = i
-    end
-
-    return filename
-end
-
-# ---------------------------------------------------------------------------
-# Plot: iteration history + initial/synthetic/optimized states only
-# ---------------------------------------------------------------------------
-
-fig = Figure(size=(1500, 1100), fontsize=22)
-
-ax_w0 = Axis(
-    fig[1, 1:2],
-    title="Twin-experiment convergence: recovering constant interface parameter w0",
-    xlabel="iteration",
-    ylabel="w0",
-)
-
-lines!(ax_w0, history.iter, history.w0, linewidth=2, label="recovered w0")
-scatter!(ax_w0, history.iter, history.w0, markersize=8)
-lines!(ax_w0, history.iter, fill(W0_TRUE, length(history.iter)), linewidth=2, linestyle=:dash, label="true w0 = $W0_TRUE")
-axislegend(ax_w0, position=:rb)
-
-ylo = min(minimum(history.w0), W0_TRUE)
-yhi = max(maximum(history.w0), W0_TRUE)
-pady = 0.08 * max(yhi - ylo, 1e-8)
-ylims!(ax_w0, ylo - pady, yhi + pady)
-
-states = [snap_ic, snap_syn, snap_opt]
-
-for (row, sn) in enumerate(states)
-    ax_eps = Axis(
-        fig[row + 1, 1],
-        title="$(sn.label): free surface, interface and bathymetry at t=$(sn.t_end)",
-        xlabel="x",
-        ylabel="elevation",
-    )
-    ax_u = Axis(
-        fig[row + 1, 2],
-        title="$(sn.label): velocities at t=$(sn.t_end)",
-        xlabel="x",
-        ylabel="velocity",
-    )
-
-    if sn.label == "initial condition"
-        plot_elevation_fields!(
-            ax_eps, sn.x, sn.ε, sn.w, sn.B;
-            legend_position=:rt,
-            legend_orientation=:vertical,
-            legend_labelsize=16,
-        )
-        plot_velocity_fields!(
-            ax_u, sn.x, sn.u1, sn.u2;
-            legend_position=:rt,
-            legend_orientation=:vertical,
-            legend_labelsize=16,
-        )
-    else
-        plot_elevation_fields!(
-            ax_eps, sn.x, sn.ε, sn.w, sn.B;
-            legend_position=:lt,
-            legend_orientation=:horizontal,
-            legend_labelsize=14,
-        )
-        plot_velocity_fields!(
-            ax_u, sn.x, sn.u1, sn.u2;
-            legend_position=:lt,
-            legend_orientation=:horizontal,
-            legend_labelsize=14,
-        )
-    end
+for (j,s) in enumerate(snaps)
+    axε = Axis(fig[j+1,1], title="$(s.label): ε, w and B at t=$(s.t)", xlabel="x", ylabel="elevation")
+    axu = Axis(fig[j+1,2], title="$(s.label): velocities at t=$(s.t)", xlabel="x", ylabel="velocity")
+    add_elev!(axε, s); add_vel!(axu, s)
 end
 
 display(fig)
-save(joinpath(save_dir, "optimization_iterations.png"), fig)
+save(joinpath(SAVE_DIR, "constant_w0_optimization.png"), fig)
 
-# ---------------------------------------------------------------------------
-# Create animation
-# ---------------------------------------------------------------------------
 
-anim_file = animate_iteration_updates(
-    history;
-    filename=joinpath(save_dir, "optimization_1D.mp4"),
-    framerate=2,
-)
 
-println("Saved optimization figure to: $(joinpath(save_dir, "optimization_iterations.png"))")
-println("Saved animation to: $anim_file")
+function animate_history(hist; filename=joinpath(SAVE_DIR,"constant_w0_optimization.mp4"), framerate=2)
+    ss = [snapshot(w; label="iter $k", t=T_END) for (k,w) in zip(hist.iter,hist.w0)]
+    ε,w,B,u1,u2 = Observable(ss[1].ε), Observable(ss[1].w), Observable(ss[1].B), Observable(ss[1].u1), Observable(ss[1].u2)
+    it,wcur,Jcur = Observable(hist.iter[1]), Observable(hist.w0[1]), Observable(hist.J[1])
+    fig = Figure(size=(1500,900), fontsize=20)
+    Label(fig[0,1:2], @lift("iter $it | w₀=$(round($wcur;digits=8)) | J=$(round($Jcur;digits=10))"), fontsize=24)
+    ax1 = Axis(fig[1,1], title="Elevation fields", xlabel="x", ylabel="elevation")
+    ax2 = Axis(fig[1,2], title="Velocities", xlabel="x", ylabel="velocity")
+    lines!(ax1, ss[1].x, ε, label="ε"); lines!(ax1, ss[1].x, w, linestyle=:dash, label="w"); lines!(ax1, ss[1].x, B, label="B"); axislegend(ax1, position=:lt)
+    lines!(ax2, ss[1].x, u1, label="u₁"); lines!(ax2, ss[1].x, u2, label="u₂"); axislegend(ax2, position=:lt)
+    record(fig, filename, eachindex(ss); framerate=framerate) do i
+        s = ss[i]; ε[]=s.ε; w[]=s.w; B[]=s.B; u1[]=s.u1; u2[]=s.u2
+        it[]=hist.iter[i]; wcur[]=hist.w0[i]; Jcur[]=hist.J[i]
+    end
+    return filename
+end
+
+anim = animate_history(hist)
+println("Saved figure: ", joinpath(SAVE_DIR, "constant_w0_optimization.png"))
+println("Saved animation: ", anim)
