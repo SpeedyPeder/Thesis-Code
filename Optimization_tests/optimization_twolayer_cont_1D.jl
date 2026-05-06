@@ -20,15 +20,15 @@ const W0_INIT_CONST = 0.5
 # Optimization tuning
 # ---------------------------------------------------------------------------
 
-const W_EPS = 1.0
-const W_U1  = 100.0
-const W_U2  = 100.0
-const W_REG_H1 = 1e-4
+const W_EPS = 0
+const W_U1  = 10
+const W_U2  = 0
+const W_REG_H1 = 1e-6
 const OBJ_SCALE = 1.0
 
-const LBFGS_M = 10
-const LBFGS_MAX_ITERS = 800
-const LBFGS_G_SWITCH = 1e-1
+const LBFGS_M = 5
+const LBFGS_MAX_ITERS = 5
+const LBFGS_G_SWITCH = 1e-4
 
 const GN_MAX_ITERS = 50
 const GN_G_FINAL = 1e-7
@@ -455,6 +455,7 @@ opts = Optim.Options(
     show_trace=true,
     show_every=1,
     iterations=LBFGS_MAX_ITERS,
+    outer_iterations=1,
     g_tol=LBFGS_G_SWITCH,
     f_abstol=0.0,
     x_abstol=0.0,
