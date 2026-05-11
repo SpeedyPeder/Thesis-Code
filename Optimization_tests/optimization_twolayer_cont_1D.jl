@@ -1,5 +1,5 @@
 using SinFVM, StaticArrays, ForwardDiff, Optim, Parameters, CairoMakie
-using LinearAlgebra
+using LinearAlgebra, Printf
 
 const DESING_KAPPA = 1e-4
 const EPS_CUT = 1e-4
@@ -21,14 +21,14 @@ const W0_INIT_CONST = 0.5
 # ---------------------------------------------------------------------------
 
 const W_EPS = 0
-const W_U1  = 10
+const W_U1  = 1
 const W_U2  = 0
-const W_REG_H1 = 1e-6
+const W_REG_H1 = 1e-4
 const OBJ_SCALE = 1.0
 
 const LBFGS_M = 5
-const LBFGS_MAX_ITERS = 5
-const LBFGS_G_SWITCH = 1e-4
+const LBFGS_MAX_ITERS = 50
+const LBFGS_G_SWITCH = 1e-5
 
 const GN_MAX_ITERS = 50
 const GN_G_FINAL = 1e-7
@@ -366,7 +366,6 @@ end
 # ---------------------------------------------------------------------------
 # Gauss-Newton / Levenberg-Marquardt directly in w0
 # ---------------------------------------------------------------------------
-
 function gauss_newton_phase(
     w0_init;
     history,
@@ -380,6 +379,12 @@ function gauss_newton_phase(
     w0 = project_w0(copy(w0_init))
     μ = damping0
 
+    gn_start_time = time()
+
+    println("\nGauss--Newton phase")
+    println("-------------------")
+    println("Iter     Function value   Gradient norm   Step length   Avg step w0   Time")
+
     for k in 1:max_iters
         r = residual_vector(w0)
         J = 0.5 * dot(r, r)
@@ -388,8 +393,16 @@ function gauss_newton_phase(
         g = Jr' * r
         gnorm = norm(g)
 
+        elapsed = time() - gn_start_time
+
         if gnorm < g_tol
             push_history!(history, history.iter[end] + 1, "GN", w0, J, gnorm)
+
+            @printf(
+                "%5d   %14.6e   %13.6e   %11s   %11s   %.3f\n",
+                k, J, gnorm, "-", "-", elapsed
+            )
+
             println("GN converged on gradient norm.")
             break
         end
@@ -426,16 +439,20 @@ function gauss_newton_phase(
         w0 = wtrial
         push_history!(history, history.iter[end] + 1, "GN", w0, Jtrial, gnorm)
 
-        println(
-            "GN iter $k: J=$(round(Jtrial; digits=12)), " *
-            "‖g‖=$(round(gnorm; digits=8)), " *
-            "α=$(round(α; digits=6)), " *
-            "avg_step_w0=$(round(step_avg; digits=8)), " *
-            "μ=$(round(μ; digits=8))"
+        elapsed = time() - gn_start_time
+
+        @printf(
+            "%5d   %14.6e   %13.6e   %11.6f   %11.6e   %.3f\n",
+            k, Jtrial, gnorm, α, step_avg, elapsed
         )
 
         μ = Jtrial < J ? max(0.5μ, 1e-8) : min(10μ, 1e4)
     end
+
+    gn_total_time = time() - gn_start_time
+
+    println("\nExiting Gauss--Newton phase")
+    println("Total GN time = $(round(gn_total_time; digits=3)) seconds")
 
     return project_w0(w0)
 end
