@@ -5,14 +5,14 @@ using LinearAlgebra, Printf
 # Constants
 # -----------------------------------------------------------------------------
 
-const NX, NY, GC = 64, 64, 2
+const NX, NY, GC = 32, 32, 2
 const XMIN, XMAX = 0.0, 100.0
 const YMIN, YMAX = 0.0, 50.0
 
 const CFL_2D = 0.2
 const DEPTH_CUT = 1e-4
 const T_END = 6.0
-const OBS_TIMES = [2.0, 4.0, 6.0]
+const OBS_TIMES = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
 
 const W_MIN, W_MAX = 0.5, 3.0
 const W0_TRUE_CONST = 1.85
@@ -26,20 +26,16 @@ const ETA_BUMP_RADIUS = 9.0
 
 const CORIOLIS_F = 1e-4
 
-const CELL_INDICES = [
-    (8, 8), (12, 24), (16, 40),
-    (24, 16), (32, 32), (40, 48),
-    (48, 16), (56, 32), (60, 48),
-]
+const CELL_INDICES = [(8, 8), (16, 16), (24, 24)]
 
-# Only upper-layer velocities in the cost
+# Only upper-layer velocities in the cost (less weight on velocity variations)
 const W_U1 = 1.0
-const W_V1 = 1.0
+const W_V1 = 0.0
 const W_REG = 1e-10
 
 const LBFGS_M = 5
-const LBFGS_MAX_ITERS = 40
-const LBFGS_G_TOL = 1e-10
+const LBFGS_MAX_ITERS = 20
+const LBFGS_G_TOL = 1e-8
 
 const SAVE_DIR = raw"C:\Users\peder\OneDrive - NTNU\År 5\Masteroppgave\Optimization"
 mkpath(SAVE_DIR)
@@ -258,9 +254,7 @@ println("  boundary      = periodic")
 # Cost function
 # -----------------------------------------------------------------------------
 
-function residual_vector_wlevel(wlevel_vec)
-    wlevel = only(wlevel_vec)
-
+function residual_vector_wlevel(wlevel)
     pred = simulate_observations(
         T_end=T_END,
         wlevel=wlevel,
@@ -269,120 +263,100 @@ function residual_vector_wlevel(wlevel_vec)
     )
 
     T = eltype(pred)
-
     nmis = length(pred)
-    r = Vector{T}(undef, nmis + 1)
+    r = Vector{T}(undef, nmis)
 
     @inbounds for k in 1:2:nmis
         r[k]   = T(SCALE_U1) * (pred[k]   - EXACT_OBS[k])
         r[k+1] = T(SCALE_V1) * (pred[k+1] - EXACT_OBS[k+1])
     end
 
-    r[nmis + 1] = T(sqrt(W_REG)) * wlevel
-
     return r
 end
 
-raw_cost(wlevel_vec) = begin
-    r = residual_vector_wlevel(wlevel_vec)
-    0.5 * dot(r, r)
+raw_cost(wlevel) = 0.5 * sum(abs2, residual_vector_wlevel(wlevel))
+cost(wvec) = raw_cost(wvec[1])
+grad!(g, wvec) = ForwardDiff.gradient!(g, cost, wvec)
+
+# History tracking
+@with_kw mutable struct History
+    iter::Vector{Int}=Int[]; w0::Vector{Float64}=Float64[]; J::Vector{Float64}=Float64[]
 end
 
-function cost_function(zvec)
-    wlevel = to_w(only(zvec))
-    J = raw_cost([wlevel])
+optim_iter(s) = hasproperty(s,:iteration) ? Int(s.iteration) : 0
+optim_x(s) = hasproperty(s,:x) ? s.x : Optim.minimizer(s)
+optim_val(s, x) = hasproperty(s,:value) ? Float64(s.value) : Float64(cost(x))
 
-    if J isa ForwardDiff.Dual
-        @assert all(.!isnan.(J.partials)) "NaN in gradient"
+function history_callback(hist)
+    first_callback = Ref(true)
+    return s -> begin
+        x = optim_x(s)
+        if first_callback[]
+            first_callback[] = false
+            if isapprox(Float64(x[1]), hist.w0[end]; atol=1e-14)
+                return false
+            end
+        end
+        k = hist.iter[end] + 1
+        push!(hist.iter, k)
+        push!(hist.w0, Float64(x[1]))
+        push!(hist.J, optim_val(s, x))
+        return false
     end
-
-    return J
 end
-
-grad!(storage, zvec) = ForwardDiff.gradient!(storage, cost_function, zvec)
 
 # -----------------------------------------------------------------------------
 # Optimization
 # -----------------------------------------------------------------------------
 
-z_start = [from_w(W0_INIT_CONST)]
-
-opts = Optim.Options(
-    store_trace=true,
-    show_trace=true,
-    show_every=1,
-    iterations=LBFGS_MAX_ITERS,
-    g_tol=LBFGS_G_TOL,
-    f_abstol=0.0,
-    x_abstol=0.0,
-    allow_f_increases=true,
-)
+hist = History()
+push!(hist.iter, 0); push!(hist.w0, W0_INIT_CONST); push!(hist.J, Float64(cost([W0_INIT_CONST])))
 
 result = optimize(
-    cost_function,
+    cost,
     grad!,
-    z_start,
-    LBFGS(; m=LBFGS_M),
-    opts,
+    [W_MIN],
+    [W_MAX],
+    [W0_INIT_CONST],
+    Fminbox(LBFGS(; m=LBFGS_M)),
+    Optim.Options(
+        show_trace=true,
+        show_every=1,
+        iterations=LBFGS_MAX_ITERS,
+        g_tol=LBFGS_G_TOL,
+        allow_f_increases=false,
+        callback=history_callback(hist)
+    ),
 )
 
-z_opt = Optim.minimizer(result)
-wlevel_opt = to_w(only(z_opt))
-
-final_cost = raw_cost([wlevel_opt])
-final_grad = ForwardDiff.gradient(cost_function, z_opt)
-w_error = abs(wlevel_opt - W0_TRUE_CONST)
+w_opt = Optim.minimizer(result)[1]
 
 println("\n=== Optimization complete ===")
-println("True w0 level      = $(round(W0_TRUE_CONST; digits=8))")
-println("Initial w0 level   = $(round(W0_INIT_CONST; digits=8))")
-println("Recovered w0 level = $(round(wlevel_opt; digits=8))")
-println("Absolute error     = $(round(w_error; digits=12))")
-println("Final raw cost     = $(round(final_cost; digits=12))")
-println("Final grad norm    = $(round(norm(final_grad); digits=12))")
+println("Bounds       = [$W_MIN, $W_MAX]")
+println("True w0      = $W0_TRUE_CONST")
+println("Recovered w0 = $(round(w_opt; digits=8))")
+println("Abs. error   = $(round(abs(w_opt - W0_TRUE_CONST); digits=12))")
+println("Final cost   = $(round(cost([w_opt]); digits=12))")
 
 # -----------------------------------------------------------------------------
 # Snapshot helper
 # -----------------------------------------------------------------------------
 
-function initial_eta_field(grid)
-    xy_int = SinFVM.cell_centers(grid; interior=true)
-    nx_int, ny_int = SinFVM.interior_size(grid)
-
-    vals = [Float64(eta0_profile(xy_int[I], Float64)) for I in eachindex(xy_int)]
-
-    return reshape(vals, nx_int, ny_int)
-end
-
-function initial_w_field(grid, wlevel)
-    nx_int, ny_int = SinFVM.interior_size(grid)
-    return fill(Float64(wlevel), nx_int, ny_int)
-end
-
-function snapshot(wlevel; label="")
+function snapshot(wlevel; label="", t=T_END)
     sim, eq, grid = setup_twolayer_simulator_2d(
         backend=SinFVM.make_cpu_backend(),
         wlevel=Float64(wlevel),
     )
-
-    η0_init = initial_eta_field(grid)
-    w0_init = initial_w_field(grid, wlevel)
-
-    SinFVM.simulate_to_time(sim, T_END)
-
+    if t > 0
+        SinFVM.simulate_to_time(sim, t)
+    end
     obs = observable_fields(sim, eq, grid)
-
     return (;
-        η0_init = Array(η0_init),
-        w0_init = Array(w0_init),
-        η = Array(obs.η),
-        w = Array(obs.w),
-        B = Array(obs.Bcell),
-        u1 = Array(obs.u1),
-        v1 = Array(obs.v1),
-        u2 = Array(obs.u2),
-        v2 = Array(obs.v2),
+        η=Array(obs.η),
+        u1=Array(obs.u1),
+        v1=Array(obs.v1),
         label,
+        t,
     )
 end
 
@@ -390,39 +364,56 @@ end
 # Plotting
 # -----------------------------------------------------------------------------
 
-snap_init = snapshot(W0_INIT_CONST; label="initial guess")
-snap_true = snapshot(W0_TRUE_CONST; label="truth")
-snap_opt  = snapshot(wlevel_opt; label="optimized")
+function snapshot(wlevel; label="", t=T_END)
+    sim, eq, grid = setup_twolayer_simulator_2d(
+        backend=SinFVM.make_cpu_backend(),
+        wlevel=Float64(wlevel),
+    )
+    SinFVM.simulate_to_time(sim, t)
+    obs = observable_fields(sim, eq, grid)
+    return (;
+        η=Array(obs.η),
+        w=Array(obs.w),
+        B=Array(obs.Bcell),
+        u1=Array(obs.u1),
+        v1=Array(obs.v1),
+        label,
+        t,
+    )
+end
 
-fig = Figure(size=(1500, 1300), fontsize=18)
+snaps = [
+    snapshot(W0_INIT_CONST; label="initial", t=0.0),
+    snapshot(W0_TRUE_CONST; label="synthetic truth", t=T_END),
+    snapshot(w_opt; label="optimized", t=T_END),
+]
 
-Label(
-    fig[0, 1:3],
-    "2-D constant-interface recovery using upper-layer velocities",
-    fontsize=24,
-)
+fig = Figure(size=(1500, 1100), fontsize=18)
 
-snaps = [snap_init, snap_true, snap_opt]
+# Convergence plot
+ax_conv = Axis(fig[1, 1:2], title="Convergence of interface parameter w₀", xlabel="iteration", ylabel="w₀")
+lines!(ax_conv, hist.iter, hist.w0, label="recovered w₀")
+scatter!(ax_conv, hist.iter, hist.w0)
+hlines!(ax_conv, [W0_TRUE_CONST], linestyle=:dash, label="true w₀")
+axislegend(ax_conv, position=:rt)
 
-for (row, sn) in enumerate(snaps)
-    ax1 = Axis(fig[row, 1], title="$(sn.label): initial interface w₀")
-    ax2 = Axis(fig[row, 2], title="$(sn.label): final free surface η")
-    ax3 = Axis(fig[row, 3], title="$(sn.label): final upper-layer speed")
-
-    speed1 = sqrt.(sn.u1.^2 .+ sn.v1.^2)
-
-    heatmap!(ax1, sn.w0_init; colorrange=(W_MIN, W_MAX))
-    heatmap!(ax2, sn.η; colorrange=(minimum(snap_true.η), maximum(snap_true.η)))
-    heatmap!(ax3, speed1)
-
-    hidedecorations!(ax1)
-    hidedecorations!(ax2)
-    hidedecorations!(ax3)
+# Snapshots
+for (j, s) in enumerate(snaps)
+    ax_η = Axis(fig[j+1, 1], title="$(s.label): free surface η at t=$(s.t)")
+    ax_speed = Axis(fig[j+1, 2], title="$(s.label): upper-layer speed at t=$(s.t)")
+    
+    speed_u1 = sqrt.(s.u1.^2 .+ s.v1.^2)
+    
+    heatmap!(ax_η, s.η)
+    heatmap!(ax_speed, speed_u1)
+    
+    hidedecorations!(ax_η)
+    hidedecorations!(ax_speed)
 end
 
 display(fig)
 
-fig_file = joinpath(SAVE_DIR, "optimization_2d_constant_interface_u1v1.png")
+fig_file = joinpath(SAVE_DIR, "optimization_2d_constant_interface.png")
 save(fig_file, fig)
 
 println("Saved figure to: $fig_file")
