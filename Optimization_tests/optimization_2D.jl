@@ -1,93 +1,51 @@
-# Copyright (c) 2024 SINTEF AS
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 using SinFVM, StaticArrays, ForwardDiff, Optim, Parameters, CairoMakie
-using LinearAlgebra, Statistics, Printf
+using LinearAlgebra, Printf
 
 # -----------------------------------------------------------------------------
-# 2D twin experiment:
-# recover a CONSTANT initial interface level w0.
-#
-# Main setup:
-#   - The initial free surface η0(x,y) is prescribed and fixed.
-#   - η0 has a smooth circular bump/tower near the middle of the wet region.
-#   - The initial interface w0 is spatially constant in the wet region.
-#   - The optimizer only changes the vertical placement of this constant interface.
-#   - η0 is never optimized.
-#   - h1 = η0 - w0 and h2 = w0 - B.
-#
-# Observables used in the cost:
-#   η, u1, v1, u2, v2
-#
-# Internal state:
-#   U = (h1, q1, p1, w, q2, p2), where w = h2 + B.
-# -----------------------------------------------------------------------------
-
-# -----------------------------------------------------------------------------
-# Global setup
+# Constants
 # -----------------------------------------------------------------------------
 
 const NX, NY, GC = 64, 64, 2
 const XMIN, XMAX = 0.0, 100.0
 const YMIN, YMAX = 0.0, 50.0
-# No dam / dry half in this version: the whole domain is wet.
+
 const CFL_2D = 0.2
 const DEPTH_CUT = 1e-4
-
 const T_END = 6.0
 const OBS_TIMES = [2.0, 4.0, 6.0]
 
-# Constant interface bounds.
 const W_MIN, W_MAX = 0.5, 3.0
-
-# True constant interface level and initial guess.
 const W0_TRUE_CONST = 1.85
 const W0_INIT_CONST = 1.00
 
-# Fixed initial free-surface bump. This is not optimized.
 const ETA_BACKGROUND = 2.80
 const ETA_BUMP_AMP = 0.75
 const ETA_BUMP_CENTER_X = 50.0
 const ETA_BUMP_CENTER_Y = 25.0
 const ETA_BUMP_RADIUS = 9.0
 
-# Observation cells distributed over the full wet domain.
+const CORIOLIS_F = 1e-4
+
 const CELL_INDICES = [
     (8, 8), (12, 24), (16, 40),
     (24, 16), (32, 32), (40, 48),
     (48, 16), (56, 32), (60, 48),
 ]
 
-# Original objective weights.
-const W_ETA_ORIG = 1.0
-const W_U1_ORIG  = 0.5
-const W_V1_ORIG  = 0.5
-const W_U2_ORIG  = 0.5
-const W_V2_ORIG  = 0.5
-const W_REG_ORIG = 1e-10
+# Only upper-layer velocities in the cost
+const W_U1 = 1.0
+const W_V1 = 1.0
+const W_REG = 1e-10
 
-# Weight clipping for adaptive sensitivity-based weighting.
-const WEIGHT_MIN_CLIP = 1e-2
-const WEIGHT_MAX_CLIP = 1e6
-
-# Optimizer settings.
 const LBFGS_M = 5
 const LBFGS_MAX_ITERS = 40
 const LBFGS_G_TOL = 1e-10
 
+const SAVE_DIR = raw"C:\Users\peder\OneDrive - NTNU\År 5\Masteroppgave\Optimization"
+mkpath(SAVE_DIR)
+
 # -----------------------------------------------------------------------------
-# Bounded transform for scalar constant interface level
+# Bounded scalar transform
 # -----------------------------------------------------------------------------
 
 σ(z) = inv(one(z) + exp(-z))
@@ -95,44 +53,34 @@ to_w(z) = W_MIN + (W_MAX - W_MIN) * σ(z)
 from_w(w) = log((w - W_MIN) / (W_MAX - w))
 
 # -----------------------------------------------------------------------------
-# Bathymetry builders
+# Bathymetry
 # -----------------------------------------------------------------------------
 
-function make_bottom_cos_sin_2d(;
-    B0=-3.0,
-    Ax=0.4,
-    Ay=0.3,
-    mx=1,
-    my=1,
-    φx=0.0,
-    φy=0.0,
-    backend,
-    grid::SinFVM.CartesianGrid{2},
-)
+function make_bottom_cos_sin_2d(; backend, grid)
     x_faces = SinFVM.cell_faces(grid, SinFVM.XDIR; interior=false)
     y_faces = SinFVM.cell_faces(grid, SinFVM.YDIR; interior=false)
-
-    nxg, nyg = length(x_faces), length(y_faces)
 
     x0, x1 = SinFVM.start_extent(grid, SinFVM.XDIR), SinFVM.end_extent(grid, SinFVM.XDIR)
     y0, y1 = SinFVM.start_extent(grid, SinFVM.YDIR), SinFVM.end_extent(grid, SinFVM.YDIR)
 
     Lx, Ly = x1 - x0, y1 - y0
-    B = Matrix{Float64}(undef, nxg, nyg)
+    B = Matrix{Float64}(undef, length(x_faces), length(y_faces))
 
-    @inbounds for j in 1:nyg, i in 1:nxg
+    @inbounds for j in eachindex(y_faces), i in eachindex(x_faces)
         xhat = (x_faces[i] - x0) / Lx
         yhat = (y_faces[j] - y0) / Ly
-        xhat -= floor(xhat)
-        yhat -= floor(yhat)
-        B[i, j] = B0 + Ax * cos(2π * mx * xhat + φx) + Ay * sin(2π * my * yhat + φy)
+
+        B[i, j] =
+            -3.0 +
+            0.4 * cos(2π * xhat) +
+            0.3 * sin(2π * yhat)
     end
 
     return SinFVM.BottomTopography2D(B, backend, grid)
 end
 
 # -----------------------------------------------------------------------------
-# Fixed free-surface profile and constant interface profile
+# Initial free surface
 # -----------------------------------------------------------------------------
 
 function eta0_profile(xy, ::Type{T}) where {T}
@@ -140,17 +88,12 @@ function eta0_profile(xy, ::Type{T}) where {T}
 
     dx = (T(x) - T(ETA_BUMP_CENTER_X)) / T(ETA_BUMP_RADIUS)
     dy = (T(y) - T(ETA_BUMP_CENTER_Y)) / T(ETA_BUMP_RADIUS)
-    r2 = dx^2 + dy^2
 
-    return T(ETA_BACKGROUND) + T(ETA_BUMP_AMP) * exp(-r2)
-end
-
-function w0_constant_profile(xy, wlevel)
-    return wlevel
+    return T(ETA_BACKGROUND) + T(ETA_BUMP_AMP) * exp(-(dx^2 + dy^2))
 end
 
 # -----------------------------------------------------------------------------
-# Simulator factory
+# Simulator
 # -----------------------------------------------------------------------------
 
 function setup_twolayer_simulator_2d(; backend=SinFVM.make_cpu_backend(), wlevel)
@@ -164,15 +107,7 @@ function setup_twolayer_simulator_2d(; backend=SinFVM.make_cpu_backend(), wlevel
         extent=[XMIN XMAX; YMIN YMAX],
     )
 
-    bottom = make_bottom_cos_sin_2d(;
-        B0=-3.0,
-        Ax=0.4,
-        Ay=0.3,
-        mx=1,
-        my=1,
-        backend=backend,
-        grid=grid,
-    )
+    bottom = make_bottom_cos_sin_2d(; backend=backend, grid=grid)
 
     eq = SinFVM.TwoLayerShallowWaterEquations2D(
         bottom;
@@ -191,7 +126,11 @@ function setup_twolayer_simulator_2d(; backend=SinFVM.make_cpu_backend(), wlevel
         flux,
         eq,
         grid,
-        [SinFVM.SourceTermBottom(), SinFVM.SourceTermNonConservative()],
+        [
+            SinFVM.SourceTermBottom(),
+            SinFVM.SourceTermNonConservative(),
+            SinFVM.SourceTermCoriolis(T(CORIOLIS_F)),
+        ],
     )
 
     sim = SinFVM.Simulator(backend, cs, SinFVM.RungeKutta2(), grid; cfl=CFL_2D)
@@ -202,20 +141,13 @@ function setup_twolayer_simulator_2d(; backend=SinFVM.make_cpu_backend(), wlevel
     εh = T(DEPTH_CUT)
 
     initial = [begin
-        xy = xy_int[I]
-        η0 = eta0_profile(xy, T)
-        w0_raw = T(wlevel)
+        η0 = eta0_profile(xy_int[I], T)
 
-        # Whole domain is wet. η0 is fixed; only the constant interface level moves.
         lower_w = T(B_int[I]) + εh
         upper_w = η0 - εh
-        w0 = clamp(w0_raw, lower_w, upper_w)
+        w0 = clamp(T(wlevel), lower_w, upper_w)
 
         h1 = η0 - w0
-        h2 = w0 - T(B_int[I])
-
-        h1 <= εh / 2 && error("Initial w0 makes h1 too small at xy=$xy: h1=$h1")
-        h2 <= εh / 2 && error("Initial w0 makes h2 too small at xy=$xy: h2=$h2")
 
         @SVector [h1, zero(T), zero(T), w0, zero(T), zero(T)]
     end for I in eachindex(xy_int)]
@@ -226,43 +158,29 @@ function setup_twolayer_simulator_2d(; backend=SinFVM.make_cpu_backend(), wlevel
 end
 
 # -----------------------------------------------------------------------------
-# Observables and reconstruction
+# Observables
 # -----------------------------------------------------------------------------
 
 function observable_fields(sim, eq, grid)
     st = SinFVM.current_interior_state(sim)
     Bcell = SinFVM.collect_topography_cells(eq.B, grid; interior=true)
 
-    h1 = st.h1
-    q1 = st.q1
-    p1 = st.p1
-    w  = st.w
-    q2 = st.q2
-    p2 = st.p2
+    h1, q1, p1 = st.h1, st.q1, st.p1
+    w, q2, p2 = st.w, st.q2, st.p2
 
     h2 = w .- Bcell
-    η  = h1 .+ w
+    η = h1 .+ w
 
     u1 = SinFVM.desingularize.(Ref(eq), h1, q1)
     v1 = SinFVM.desingularize.(Ref(eq), h1, p1)
     u2 = SinFVM.desingularize.(Ref(eq), h2, q2)
     v2 = SinFVM.desingularize.(Ref(eq), h2, p2)
 
-    return (; Bcell, h1, q1, p1, w, q2, p2, h2, η, u1, v1, u2, v2)
+    return (; Bcell, η, w, h1, h2, u1, v1, u2, v2)
 end
-
-reconstruct_from_observables(η, u1, v1, u2, v2, w, B) = (;
-    h1 = η .- w,
-    h2 = w .- B,
-    q1 = (η .- w) .* u1,
-    p1 = (η .- w) .* v1,
-    q2 = (w .- B) .* u2,
-    p2 = (w .- B) .* v2,
-)
 
 # -----------------------------------------------------------------------------
 # Observation callback
-# cell_indices are tuples like (i,j).
 # -----------------------------------------------------------------------------
 
 @with_kw mutable struct ObservableRecorder{VT,IT,OT}
@@ -272,9 +190,8 @@ reconstruct_from_observables(η, u1, v1, u2, v2, w, B) = (;
     data::Vector{OT} = OT[]
 end
 
-function (cb::ObservableRecorder)(time, simulator)
+function (cb::ObservableRecorder)(time, sim)
     t = ForwardDiff.value(time)
-    sim = simulator
     eq = sim.system.equation
     grid = sim.grid
 
@@ -282,20 +199,13 @@ function (cb::ObservableRecorder)(time, simulator)
         obs = observable_fields(sim, eq, grid)
 
         for (i, j) in cb.cell_indices
-            push!(cb.data, obs.η[i, j])
             push!(cb.data, obs.u1[i, j])
             push!(cb.data, obs.v1[i, j])
-            push!(cb.data, obs.u2[i, j])
-            push!(cb.data, obs.v2[i, j])
         end
 
         cb.next_obs += 1
     end
 end
-
-# -----------------------------------------------------------------------------
-# Forward solve
-# -----------------------------------------------------------------------------
 
 function simulate_observations(; T_end, wlevel, obs_times, cell_indices)
     ADType = typeof(wlevel)
@@ -329,67 +239,23 @@ const EXACT_OBS = simulate_observations(
     cell_indices=CELL_INDICES,
 )
 
-println("Generated synthetic exact observations:")
-println("  true constant w0 = $(round(W0_TRUE_CONST; digits=4))")
-println("  initial guess w0 = $(round(W0_INIT_CONST; digits=4))")
-println("  η background     = $ETA_BACKGROUND")
-println("  η bump amp       = $ETA_BUMP_AMP")
-println("  η bump center    = ($ETA_BUMP_CENTER_X, $ETA_BUMP_CENTER_Y)")
-println("  η bump radius    = $ETA_BUMP_RADIUS")
-println("  CFL_2D           = $CFL_2D")
-println("  n_observables    = $(length(EXACT_OBS))")
+const N_OBS_PAIRS = length(EXACT_OBS) ÷ 2
+
+const U1_SCALE = max(maximum(abs.(EXACT_OBS[1:2:end])), 1e-2)
+const V1_SCALE = max(maximum(abs.(EXACT_OBS[2:2:end])), 1e-2)
+
+const SCALE_U1 = sqrt(W_U1 / N_OBS_PAIRS) / U1_SCALE
+const SCALE_V1 = sqrt(W_V1 / N_OBS_PAIRS) / V1_SCALE
+
+println("Generated synthetic observations:")
+println("  true w0       = $W0_TRUE_CONST")
+println("  initial w0    = $W0_INIT_CONST")
+println("  n_observables = $(length(EXACT_OBS))")
+println("  observables   = u1, v1 only")
+println("  boundary      = periodic")
 
 # -----------------------------------------------------------------------------
-# Adaptive weights config
-# -----------------------------------------------------------------------------
-
-const N_OBS_GROUPS = length(EXACT_OBS) ÷ 5
-
-const ADAPTIVE_WEIGHTS_CONFIG_2D = Dict{Symbol,Any}(
-    :use_adaptive => false,
-    :W_eta => W_ETA_ORIG,
-    :W_u1  => W_U1_ORIG,
-    :W_v1  => W_V1_ORIG,
-    :W_u2  => W_U2_ORIG,
-    :W_v2  => W_V2_ORIG,
-    :W_reg => W_REG_ORIG,
-)
-
-function reset_to_original_weights_2d!()
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:use_adaptive] = false
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:W_eta] = W_ETA_ORIG
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:W_u1]  = W_U1_ORIG
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:W_v1]  = W_V1_ORIG
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:W_u2]  = W_U2_ORIG
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:W_v2]  = W_V2_ORIG
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:W_reg] = W_REG_ORIG
-    return nothing
-end
-
-function set_adaptive_weights_2d!(W_eta, W_u1, W_v1, W_u2, W_v2; W_reg=W_REG_ORIG)
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:use_adaptive] = true
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:W_eta] = W_eta
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:W_u1]  = W_u1
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:W_v1]  = W_v1
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:W_u2]  = W_u2
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:W_v2]  = W_v2
-    ADAPTIVE_WEIGHTS_CONFIG_2D[:W_reg] = W_reg
-    return nothing
-end
-
-function current_weights_2d()
-    return (
-        W_eta = ADAPTIVE_WEIGHTS_CONFIG_2D[:W_eta],
-        W_u1  = ADAPTIVE_WEIGHTS_CONFIG_2D[:W_u1],
-        W_v1  = ADAPTIVE_WEIGHTS_CONFIG_2D[:W_v1],
-        W_u2  = ADAPTIVE_WEIGHTS_CONFIG_2D[:W_u2],
-        W_v2  = ADAPTIVE_WEIGHTS_CONFIG_2D[:W_v2],
-        W_reg = ADAPTIVE_WEIGHTS_CONFIG_2D[:W_reg],
-    )
-end
-
-# -----------------------------------------------------------------------------
-# Residual and cost
+# Cost function
 # -----------------------------------------------------------------------------
 
 function residual_vector_wlevel(wlevel_vec)
@@ -403,37 +269,24 @@ function residual_vector_wlevel(wlevel_vec)
     )
 
     T = eltype(pred)
-    weights = current_weights_2d()
 
     nmis = length(pred)
-    nreg = 1
-    r = Vector{T}(undef, nmis + nreg)
+    r = Vector{T}(undef, nmis + 1)
 
-    # Use sqrt(W / N_OBS_GROUPS) to keep cost magnitude roughly independent of
-    # the number of observations.
-    sη  = sqrt(T(weights.W_eta) / T(N_OBS_GROUPS))
-    su1 = sqrt(T(weights.W_u1)  / T(N_OBS_GROUPS))
-    sv1 = sqrt(T(weights.W_v1)  / T(N_OBS_GROUPS))
-    su2 = sqrt(T(weights.W_u2)  / T(N_OBS_GROUPS))
-    sv2 = sqrt(T(weights.W_v2)  / T(N_OBS_GROUPS))
-
-    @inbounds for k in 1:5:nmis
-        r[k]   = sη  * (pred[k]   - EXACT_OBS[k])
-        r[k+1] = su1 * (pred[k+1] - EXACT_OBS[k+1])
-        r[k+2] = sv1 * (pred[k+2] - EXACT_OBS[k+2])
-        r[k+3] = su2 * (pred[k+3] - EXACT_OBS[k+3])
-        r[k+4] = sv2 * (pred[k+4] - EXACT_OBS[k+4])
+    @inbounds for k in 1:2:nmis
+        r[k]   = T(SCALE_U1) * (pred[k]   - EXACT_OBS[k])
+        r[k+1] = T(SCALE_V1) * (pred[k+1] - EXACT_OBS[k+1])
     end
 
-    # Very weak regularization towards small interface level.
-    # Increase this only if the inverse problem becomes ill-conditioned.
-    sreg = sqrt(T(weights.W_reg))
-    r[nmis + 1] = sreg * wlevel
+    r[nmis + 1] = T(sqrt(W_REG)) * wlevel
 
     return r
 end
 
-raw_cost(wlevel_vec) = 0.5 * dot(residual_vector_wlevel(wlevel_vec), residual_vector_wlevel(wlevel_vec))
+raw_cost(wlevel_vec) = begin
+    r = residual_vector_wlevel(wlevel_vec)
+    0.5 * dot(r, r)
+end
 
 function cost_function(zvec)
     wlevel = to_w(only(zvec))
@@ -449,159 +302,61 @@ end
 grad!(storage, zvec) = ForwardDiff.gradient!(storage, cost_function, zvec)
 
 # -----------------------------------------------------------------------------
-# Sensitivity-based adaptive weighting
+# Optimization
 # -----------------------------------------------------------------------------
 
-function observable_jacobian_sensitivities_2d(wlevel_ref)
-    obs_fun = wvec -> simulate_observations(
-        T_end=T_END,
-        wlevel=only(wvec),
-        obs_times=OBS_TIMES,
-        cell_indices=CELL_INDICES,
-    )
+z_start = [from_w(W0_INIT_CONST)]
 
-    Jobs = ForwardDiff.jacobian(obs_fun, [wlevel_ref])
+opts = Optim.Options(
+    store_trace=true,
+    show_trace=true,
+    show_every=1,
+    iterations=LBFGS_MAX_ITERS,
+    g_tol=LBFGS_G_TOL,
+    f_abstol=0.0,
+    x_abstol=0.0,
+    allow_f_increases=true,
+)
 
-    η_rows  = 1:5:size(Jobs, 1)
-    u1_rows = 2:5:size(Jobs, 1)
-    v1_rows = 3:5:size(Jobs, 1)
-    u2_rows = 4:5:size(Jobs, 1)
-    v2_rows = 5:5:size(Jobs, 1)
+result = optimize(
+    cost_function,
+    grad!,
+    z_start,
+    LBFGS(; m=LBFGS_M),
+    opts,
+)
 
-    sens_η  = norm(Jobs[η_rows,  :]) / sqrt(length(η_rows))
-    sens_u1 = norm(Jobs[u1_rows, :]) / sqrt(length(u1_rows))
-    sens_v1 = norm(Jobs[v1_rows, :]) / sqrt(length(v1_rows))
-    sens_u2 = norm(Jobs[u2_rows, :]) / sqrt(length(u2_rows))
-    sens_v2 = norm(Jobs[v2_rows, :]) / sqrt(length(v2_rows))
+z_opt = Optim.minimizer(result)
+wlevel_opt = to_w(only(z_opt))
 
-    return (; sens_η, sens_u1, sens_v1, sens_u2, sens_v2, Jobs)
-end
+final_cost = raw_cost([wlevel_opt])
+final_grad = ForwardDiff.gradient(cost_function, z_opt)
+w_error = abs(wlevel_opt - W0_TRUE_CONST)
 
-function adaptive_weights_from_observable_sensitivities_2d(wlevel_ref; min_clip=WEIGHT_MIN_CLIP, max_clip=WEIGHT_MAX_CLIP)
-    sens = observable_jacobian_sensitivities_2d(wlevel_ref)
-    vals = [sens.sens_η, sens.sens_u1, sens.sens_v1, sens.sens_u2, sens.sens_v2]
-
-    ref = maximum(vals)
-    safe = max(1e-14 * ref, eps(Float64))
-
-    # Since residuals use sqrt(W), equalizing Jacobian magnitudes uses W ≈ (ref/sens)^2.
-    Wη  = (ref / max(sens.sens_η,  safe))^2
-    Wu1 = (ref / max(sens.sens_u1, safe))^2
-    Wv1 = (ref / max(sens.sens_v1, safe))^2
-    Wu2 = (ref / max(sens.sens_u2, safe))^2
-    Wv2 = (ref / max(sens.sens_v2, safe))^2
-
-    return (
-        clamp(Wη,  min_clip, max_clip),
-        clamp(Wu1, min_clip, max_clip),
-        clamp(Wv1, min_clip, max_clip),
-        clamp(Wu2, min_clip, max_clip),
-        clamp(Wv2, min_clip, max_clip),
-        sens,
-    )
-end
-
-function plot_sensitivity_diagnostics_2d(wlevel_ref, filename)
-    reset_to_original_weights_2d!()
-
-    sens = observable_jacobian_sensitivities_2d(wlevel_ref)
-    Jobs = sens.Jobs
-
-    col_norms = vec(sqrt.(sum(abs2, Jobs; dims=1)))
-    row_norms = vec(sqrt.(sum(abs2, Jobs; dims=2)))
-
-    nmis = length(EXACT_OBS)
-    row_η  = row_norms[1:5:nmis]
-    row_u1 = row_norms[2:5:nmis]
-    row_v1 = row_norms[3:5:nmis]
-    row_u2 = row_norms[4:5:nmis]
-    row_v2 = row_norms[5:5:nmis]
-
-    fig = Figure(size=(1400, 900), fontsize=18)
-
-    ax1 = Axis(fig[1, 1], title="Scalar interface sensitivity", xlabel="Parameter index", ylabel="Jacobian column norm")
-    lines!(ax1, 1:length(col_norms), col_norms, linewidth=2)
-    scatter!(ax1, 1:length(col_norms), col_norms, markersize=10)
-
-    ax2 = Axis(fig[1, 2], title="Observation row sensitivities", xlabel="Observation index per type", ylabel="Row norm")
-    lines!(ax2, 1:length(row_η),  row_η,  label="η", linewidth=2)
-    lines!(ax2, 1:length(row_u1), row_u1, label="u1", linewidth=2)
-    lines!(ax2, 1:length(row_v1), row_v1, label="v1", linewidth=2)
-    lines!(ax2, 1:length(row_u2), row_u2, label="u2", linewidth=2)
-    lines!(ax2, 1:length(row_v2), row_v2, label="v2", linewidth=2)
-    axislegend(ax2, position=:rb)
-
-    ax3 = Axis(fig[2, 1:2], title="Observable block sensitivities", xlabel="Observable", ylabel="Sensitivity", yscale=log10)
-    labels = ["η", "u1", "v1", "u2", "v2"]
-    vals = [sens.sens_η, sens.sens_u1, sens.sens_v1, sens.sens_u2, sens.sens_v2]
-    xpos = 1:5
-    barplot!(ax3, xpos, vals)
-    ax3.xticks = (xpos, labels)
-
-    save(filename, fig)
-    println("Saved sensitivity diagnostics to: $filename")
-
-    return fig
-end
+println("\n=== Optimization complete ===")
+println("True w0 level      = $(round(W0_TRUE_CONST; digits=8))")
+println("Initial w0 level   = $(round(W0_INIT_CONST; digits=8))")
+println("Recovered w0 level = $(round(wlevel_opt; digits=8))")
+println("Absolute error     = $(round(w_error; digits=12))")
+println("Final raw cost     = $(round(final_cost; digits=12))")
+println("Final grad norm    = $(round(norm(final_grad); digits=12))")
 
 # -----------------------------------------------------------------------------
-# Optimization helpers
+# Snapshot helper
 # -----------------------------------------------------------------------------
-
-function run_optimization(label; initial_wlevel, iterations=LBFGS_MAX_ITERS)
-    initial_guess = [from_w(initial_wlevel)]
-
-    opts = Optim.Options(
-        store_trace=true,
-        show_trace=true,
-        show_every=1,
-        iterations=iterations,
-        g_tol=LBFGS_G_TOL,
-        f_abstol=1e-12,
-        x_abstol=1e-12,
-        allow_f_increases=false,
-    )
-
-    println("\n" * "="^70)
-    println("Optimization: $label")
-    println("="^70)
-
-    result = optimize(cost_function, grad!, initial_guess, LBFGS(; m=LBFGS_M), opts)
-
-    z_opt = Optim.minimizer(result)
-    wlevel_opt = to_w(only(z_opt))
-    final_cost = raw_cost([wlevel_opt])
-    grad_final = ForwardDiff.gradient(cost_function, z_opt)
-    w_error = abs(wlevel_opt - W0_TRUE_CONST)
-
-    println("\n=== Optimization complete: $label ===")
-    println("True w0 level      = $(round(W0_TRUE_CONST; digits=8))")
-    println("Recovered w0 level = $(round(wlevel_opt; digits=8))")
-    println("Absolute error     = $(round(w_error; digits=12))")
-    println("Final raw cost     = $(round(final_cost; digits=12))")
-    println("Final ‖∇z J‖       = $(round(norm(grad_final); digits=12))")
-
-    return (; result, z_opt, wlevel_opt, final_cost, grad_final, w_error)
-end
-
-# -----------------------------------------------------------------------------
-# Diagnostics and plotting helpers
-# -----------------------------------------------------------------------------
-
-function initial_w_field(grid, wlevel)
-    xy_int = SinFVM.cell_centers(grid; interior=true)
-    nx_int, ny_int = SinFVM.interior_size(grid)
-
-    vals = [Float64(w0_constant_profile(xy_int[I], Float64(wlevel))) for I in eachindex(xy_int)]
-    return reshape(vals, nx_int, ny_int)
-end
 
 function initial_eta_field(grid)
     xy_int = SinFVM.cell_centers(grid; interior=true)
     nx_int, ny_int = SinFVM.interior_size(grid)
 
     vals = [Float64(eta0_profile(xy_int[I], Float64)) for I in eachindex(xy_int)]
+
     return reshape(vals, nx_int, ny_int)
+end
+
+function initial_w_field(grid, wlevel)
+    nx_int, ny_int = SinFVM.interior_size(grid)
+    return fill(Float64(wlevel), nx_int, ny_int)
 end
 
 function snapshot(wlevel; label="")
@@ -616,7 +371,6 @@ function snapshot(wlevel; label="")
     SinFVM.simulate_to_time(sim, T_END)
 
     obs = observable_fields(sim, eq, grid)
-    rec = reconstruct_from_observables(obs.η, obs.u1, obs.v1, obs.u2, obs.v2, obs.w, obs.Bcell)
 
     return (;
         η0_init = Array(η0_init),
@@ -628,109 +382,47 @@ function snapshot(wlevel; label="")
         v1 = Array(obs.v1),
         u2 = Array(obs.u2),
         v2 = Array(obs.v2),
-        h1 = Array(rec.h1),
-        h2 = Array(rec.h2),
         label,
     )
 end
 
-function cost_trace_values(result)
-    return try
-        [t.value for t in Optim.trace(result) if hasproperty(t, :value)]
-    catch
-        Float64[]
-    end
-end
-
 # -----------------------------------------------------------------------------
-# Main run
+# Plotting
 # -----------------------------------------------------------------------------
 
-# Baseline with original weights.
-reset_to_original_weights_2d!()
-baseline = run_optimization("original weights"; initial_wlevel=W0_INIT_CONST, iterations=LBFGS_MAX_ITERS)
-
-# Sensitivity diagnostics and adaptive weights.
-sens_file = joinpath(pwd(), "sensitivity_diagnostics_2d_constant_interface.png")
-plot_sensitivity_diagnostics_2d(baseline.wlevel_opt, sens_file)
-
-Wη_ad, Wu1_ad, Wv1_ad, Wu2_ad, Wv2_ad, obs_sens =
-    adaptive_weights_from_observable_sensitivities_2d(baseline.wlevel_opt)
-
-println("\nObservable sensitivities at baseline solution:")
-println("  η  = $(@sprintf "%.6e" obs_sens.sens_η)")
-println("  u1 = $(@sprintf "%.6e" obs_sens.sens_u1)")
-println("  v1 = $(@sprintf "%.6e" obs_sens.sens_v1)")
-println("  u2 = $(@sprintf "%.6e" obs_sens.sens_u2)")
-println("  v2 = $(@sprintf "%.6e" obs_sens.sens_v2)")
-
-println("\nAdaptive weights:")
-println("  W_ETA = $(@sprintf "%.6f" Wη_ad)")
-println("  W_U1  = $(@sprintf "%.6f" Wu1_ad)")
-println("  W_V1  = $(@sprintf "%.6f" Wv1_ad)")
-println("  W_U2  = $(@sprintf "%.6f" Wu2_ad)")
-println("  W_V2  = $(@sprintf "%.6f" Wv2_ad)")
-
-# Adaptive run from the same wrong constant-interface initial guess.
-set_adaptive_weights_2d!(Wη_ad, Wu1_ad, Wv1_ad, Wu2_ad, Wv2_ad; W_reg=W_REG_ORIG)
-adaptive = run_optimization("adaptive observable weights"; initial_wlevel=W0_INIT_CONST, iterations=LBFGS_MAX_ITERS)
-
-# Comparison.
-println("\n" * "="^70)
-println("Comparison")
-println("="^70)
-println("Baseline w0 error = $(round(baseline.w_error; digits=12))")
-println("Adaptive w0 error = $(round(adaptive.w_error; digits=12))")
-println("Baseline final cost  = $(round(baseline.final_cost; digits=12))")
-println("Adaptive final cost  = $(round(adaptive.final_cost; digits=12))")
-
-# Use adaptive result as final.
-wlevel_opt = adaptive.wlevel_opt
-
-# -----------------------------------------------------------------------------
-# Plot
-# -----------------------------------------------------------------------------
-
-reset_to_original_weights_2d!()
-
+snap_init = snapshot(W0_INIT_CONST; label="initial guess")
 snap_true = snapshot(W0_TRUE_CONST; label="truth")
-snap_init = snapshot(W0_INIT_CONST; label="wrong constant initial guess")
-snap_base = snapshot(baseline.wlevel_opt; label="optimized original weights")
-snap_adap = snapshot(adaptive.wlevel_opt; label="optimized adaptive weights")
+snap_opt  = snapshot(wlevel_opt; label="optimized")
 
-cost_vals_baseline = cost_trace_values(baseline.result)
-cost_vals_adaptive = cost_trace_values(adaptive.result)
+fig = Figure(size=(1500, 1300), fontsize=18)
 
-fig = Figure(size=(1700, 1500), fontsize=18)
+Label(
+    fig[0, 1:3],
+    "2-D constant-interface recovery using upper-layer velocities",
+    fontsize=24,
+)
 
-ax_conv = Axis(fig[1, 1:3], title="2D constant-interface recovery", xlabel="iteration", ylabel="objective", yscale=log10)
-if !isempty(cost_vals_baseline)
-    lines!(ax_conv, 1:length(cost_vals_baseline), cost_vals_baseline, linewidth=2, label="original")
-    scatter!(ax_conv, 1:length(cost_vals_baseline), cost_vals_baseline, markersize=6)
-end
-if !isempty(cost_vals_adaptive)
-    lines!(ax_conv, 1:length(cost_vals_adaptive), cost_vals_adaptive, linewidth=2, label="adaptive")
-    scatter!(ax_conv, 1:length(cost_vals_adaptive), cost_vals_adaptive, markersize=6)
-end
-axislegend(ax_conv, position=:rt)
-
-snaps = [snap_true, snap_init, snap_base, snap_adap]
+snaps = [snap_init, snap_true, snap_opt]
 
 for (row, sn) in enumerate(snaps)
-    ax1 = Axis(fig[row + 1, 1], title="$(sn.label): fixed initial η₀(x,y)")
-    ax2 = Axis(fig[row + 1, 2], title="$(sn.label): initial constant w₀")
-    ax3 = Axis(fig[row + 1, 3], title="$(sn.label): final η(x,y) at T=$(T_END)")
+    ax1 = Axis(fig[row, 1], title="$(sn.label): initial interface w₀")
+    ax2 = Axis(fig[row, 2], title="$(sn.label): final free surface η")
+    ax3 = Axis(fig[row, 3], title="$(sn.label): final upper-layer speed")
 
-    # Fixed color ranges make the difference between true/init/optimized visible.
-    heatmap!(ax1, sn.η0_init; colorrange=(ETA_BACKGROUND, ETA_BACKGROUND + ETA_BUMP_AMP))
-    heatmap!(ax2, sn.w0_init; colorrange=(W_MIN, W_MAX))
-    heatmap!(ax3, sn.η; colorrange=(minimum(snap_true.η), maximum(snap_true.η)))
+    speed1 = sqrt.(sn.u1.^2 .+ sn.v1.^2)
+
+    heatmap!(ax1, sn.w0_init; colorrange=(W_MIN, W_MAX))
+    heatmap!(ax2, sn.η; colorrange=(minimum(snap_true.η), maximum(snap_true.η)))
+    heatmap!(ax3, speed1)
+
+    hidedecorations!(ax1)
+    hidedecorations!(ax2)
+    hidedecorations!(ax3)
 end
 
 display(fig)
 
-println("\n=== Final selected result ===")
-println("True constant w0      = $(round(W0_TRUE_CONST; digits=8))")
-println("Recovered constant w0 = $(round(wlevel_opt; digits=8))")
-println("Absolute error        = $(round(abs(wlevel_opt - W0_TRUE_CONST); digits=12))")
-println("Sensitivity diagnostics saved to: $sens_file")
+fig_file = joinpath(SAVE_DIR, "optimization_2d_constant_interface_u1v1.png")
+save(fig_file, fig)
+
+println("Saved figure to: $fig_file")
