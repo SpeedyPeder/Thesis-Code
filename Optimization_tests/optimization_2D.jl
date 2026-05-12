@@ -79,7 +79,7 @@ const CELL_INDICES = [
 const W_U1 = 1.0
 const W_V1 = 1.0
 
-const W_REG = 1e-10
+const W_REG = 0
 
 # --------------------------------------------------------------------------
 # Optimization settings
