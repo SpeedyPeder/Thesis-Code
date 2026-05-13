@@ -22,12 +22,12 @@ const ROTATION_PERIOD = 2π / CORIOLIS_F
 const T_END = 12.0 * 60.0
 
 const OBS_TIMES = [
+    1.0 * 60.0,
     2.0 * 60.0,
+    3.0 * 60.0,
     4.0 * 60.0,
+    5.0 * 60.0,
     6.0 * 60.0,
-    8.0 * 60.0,
-    10.0 * 60.0,
-    12.0 * 60.0,
 ]
 
 # Interface w
@@ -54,7 +54,7 @@ const W_V1 = 1.0
 const W_REG_SMOOTH = 1e-4
 
 # Optimization settings
-const FD_CHUNK = 256
+const FD_CHUNK = 32
 
 const LBFGS_M = 10
 const LBFGS_MAX_ITERS = 20
