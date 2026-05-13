@@ -6,43 +6,41 @@ using LinearAlgebra, Printf
 # =============================================================================
 
 const NX, NY, GC = 32, 32, 2
-const DX_TARGET = 800.0
 
-const XMIN, XMAX = 0.0, NX * DX_TARGET
-const YMIN, YMAX = 0.0, NY * DX_TARGET
+# Physical 32 m × 32 m pool
+const XMIN, XMAX = 0.0, 32.0
+const YMIN, YMAX = 0.0, 32.0
 
 const CFL_2D = 0.2
 const DEPTH_CUT = 1e-4
 
-# Time-compressed Coriolis test
-const TIME_SPEEDUP = NX * NY
+# Rotating pool: f = 10^(-2) s^(-1)
+const CORIOLIS_F = 1e-2
+const ROTATION_PERIOD = 2π / CORIOLIS_F
 
-const T_END_FULL = 12.0 * 3600.0
-const T_END = T_END_FULL / TIME_SPEEDUP
+# Simulate 12 minutes
+const T_END = 12.0 * 60.0
 
 const OBS_TIMES = [
-    2.0 * 3600.0 / TIME_SPEEDUP,
-    4.0 * 3600.0 / TIME_SPEEDUP,
-    6.0 * 3600.0 / TIME_SPEEDUP,
-    8.0 * 3600.0 / TIME_SPEEDUP,
-    10.0 * 3600.0 / TIME_SPEEDUP,
-    12.0 * 3600.0 / TIME_SPEEDUP,
+    2.0 * 60.0,
+    4.0 * 60.0,
+    6.0 * 60.0,
+    8.0 * 60.0,
+    10.0 * 60.0,
+    12.0 * 60.0,
 ]
 
-# Increased so that f*T is comparable to the long simulation
-const CORIOLIS_F = 1e-4 * TIME_SPEEDUP
-
-# Interface
-const W0_INIT_CONST = 1.00
-const W0_TRUE_MEAN = 1.85
-const W0_TRUE_AMP = 0.25
+# Interface w
+const W0_INIT_CONST = -0.15
+const W0_TRUE_MEAN = -0.120
+const W0_TRUE_AMP = 0.025
 
 # Initial free surface ε
-const EPSILON_BACKGROUND = 2.80
-const EPSILON_BUMP_AMP = 0.75
+const EPSILON_BACKGROUND = 0.0
+const EPSILON_BUMP_AMP = 0.015
 const EPSILON_BUMP_CENTER_X = 0.5 * (XMIN + XMAX)
 const EPSILON_BUMP_CENTER_Y = 0.5 * (YMIN + YMAX)
-const EPSILON_BUMP_RADIUS = 4.0 * DX_TARGET
+const EPSILON_BUMP_RADIUS = 4.0
 
 # Observation locations
 const OBS_STRIDE = 4
@@ -56,6 +54,8 @@ const W_V1 = 1.0
 const W_REG_SMOOTH = 1e-4
 
 # Optimization settings
+const FD_CHUNK = 256
+
 const LBFGS_M = 10
 const LBFGS_MAX_ITERS = 20
 const LBFGS_G_TOL = 1e-8
@@ -78,23 +78,16 @@ function make_bottom_cos_sin_2d(; backend, grid)
     x_faces = SinFVM.cell_faces(grid, SinFVM.XDIR; interior=false)
     y_faces = SinFVM.cell_faces(grid, SinFVM.YDIR; interior=false)
 
-    x0 = SinFVM.start_extent(grid, SinFVM.XDIR)
-    x1 = SinFVM.end_extent(grid, SinFVM.XDIR)
-    y0 = SinFVM.start_extent(grid, SinFVM.YDIR)
-    y1 = SinFVM.end_extent(grid, SinFVM.YDIR)
-
-    Lx, Ly = x1 - x0, y1 - y0
-
     B = Matrix{Float64}(undef, length(x_faces), length(y_faces))
 
     @inbounds for j in eachindex(y_faces), i in eachindex(x_faces)
-        xhat = (x_faces[i] - x0) / Lx
-        yhat = (y_faces[j] - y0) / Ly
+        x = x_faces[i]
+        y = y_faces[j]
 
         B[i, j] =
-            -3.0 +
-            0.4 * cos(2π * xhat) +
-            0.3 * sin(2π * yhat)
+            -0.3+
+            0.04 * cos(2π * x / 32.0) +
+            0.03 * sin(2π * y / 32.0)
     end
 
     return SinFVM.BottomTopography2D(B, backend, grid)
@@ -332,13 +325,15 @@ const SCALE_U1 = sqrt(W_U1 / N_OBS_PAIRS) / U1_SCALE
 const SCALE_V1 = sqrt(W_V1 / N_OBS_PAIRS) / V1_SCALE
 
 println("Generated synthetic observations:")
-println("  n_controls   = $(NX * NY)")
-println("  n_obs        = $(length(EXACT_OBS))")
-println("  n_cells_obs  = $(length(CELL_INDICES))")
-println("  T_END        = $T_END")
-println("  f            = $CORIOLIS_F")
-println("  boundary     = Neumann")
-println("  max |obs|    = $(maximum(abs.(EXACT_OBS)))")
+println("  n_controls        = $(NX * NY)")
+println("  n_obs             = $(length(EXACT_OBS))")
+println("  n_cells_obs       = $(length(CELL_INDICES))")
+println("  domain            = [$(XMIN), $(XMAX)] × [$(YMIN), $(YMAX)] m")
+println("  T_END             = $T_END s = $(T_END / 60) min")
+println("  f                 = $CORIOLIS_F s⁻¹")
+println("  rotation period   = $(ROTATION_PERIOD) s = $(ROTATION_PERIOD / 60) min")
+println("  boundary          = Neumann")
+println("  max |obs|         = $(maximum(abs.(EXACT_OBS)))")
 
 # =============================================================================
 # Cost function
@@ -407,7 +402,16 @@ function cost(wvec)
     return 0.5 * sum(abs2, r)
 end
 
-grad!(g, wvec) = ForwardDiff.gradient!(g, cost, wvec)
+function gradient_fd(wvec)
+    cfg = ForwardDiff.GradientConfig(cost, wvec, ForwardDiff.Chunk{FD_CHUNK}())
+    return ForwardDiff.gradient(cost, wvec, cfg)
+end
+
+function grad!(g, wvec)
+    cfg = ForwardDiff.GradientConfig(cost, wvec, ForwardDiff.Chunk{FD_CHUNK}())
+    ForwardDiff.gradient!(g, cost, wvec, cfg)
+    return g
+end
 
 # =============================================================================
 # History
@@ -447,8 +451,7 @@ function history_callback(hist, t0)
         w = project_w_profile(copy(optim_x(s)))
 
         Jphys = cost(w)
-        g = ForwardDiff.gradient(cost, w)
-        gnorm = norm(g)
+        gnorm = hasproperty(s, :g_norm) ? Float64(s.g_norm) : NaN
 
         push_history!(hist, "Fminbox-LBFGS", w, Jphys, gnorm; elapsed=time() - t0)
 
@@ -473,7 +476,7 @@ hist = History()
 w0_start = copy(W0_INIT_PROFILE)
 
 J0 = cost(w0_start)
-g0 = ForwardDiff.gradient(cost, w0_start)
+g0 = gradient_fd(w0_start)
 
 push_history!(hist, "initial", w0_start, J0, norm(g0); elapsed=0.0, force=true)
 
@@ -594,7 +597,7 @@ end
 w_lbfgs_profile = project_w_profile(copy(Optim.minimizer(result_lbfgs)))
 
 J_lbfgs = cost(w_lbfgs_profile)
-g_lbfgs = ForwardDiff.gradient(cost, w_lbfgs_profile)
+g_lbfgs = gradient_fd(w_lbfgs_profile)
 
 push_history!(
     hist,
@@ -615,7 +618,7 @@ time_gn = @elapsed begin
 end
 
 J_opt = cost(w_opt_profile)
-g_opt = ForwardDiff.gradient(cost, w_opt_profile)
+g_opt = gradient_fd(w_opt_profile)
 
 push_history!(
     hist,
