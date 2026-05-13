@@ -60,6 +60,13 @@ const LBFGS_M = 10
 const LBFGS_MAX_ITERS = 20
 const LBFGS_G_TOL = 1e-8
 
+const GN_MAX_ITERS = 10
+const GN_G_TOL = 1e-7
+const GN_DAMPING0 = 1e-6
+const GN_ARMIJO_C1 = 1e-6
+const GN_BACKTRACK = 0.5
+const GN_MIN_STEP = 1e-3
+
 const SAVE_DIR = raw"C:\Users\peder\OneDrive - NTNU\År 5\Masteroppgave\Optimization"
 mkpath(SAVE_DIR)
 
@@ -496,18 +503,127 @@ time_lbfgs = @elapsed begin
     )
 end
 
-w_opt_profile = project_w_profile(copy(Optim.minimizer(result_lbfgs)))
+
+function gauss_newton_phase(
+    w_init;
+    hist,
+    max_iters=GN_MAX_ITERS,
+    damping0=GN_DAMPING0,
+    g_tol=GN_G_TOL,
+    c1=GN_ARMIJO_C1,
+    backtrack=GN_BACKTRACK,
+    min_step=GN_MIN_STEP,
+)
+    w = project_w_profile(copy(w_init))
+    μ = damping0
+    t0 = time()
+
+    println("\nGauss--Newton phase")
+    println("-------------------")
+    println("Iter     Function value      Gradient norm      Step length      Avg step      Time")
+
+    for k in 1:max_iters
+        r = residual_vector(w)
+        Jval = 0.5 * dot(r, r)
+
+        Jr = ForwardDiff.jacobian(residual_vector, w)
+
+        g = Jr' * r
+        gnorm = norm(g)
+
+        if gnorm < g_tol
+            push_history!(hist, "GN", w, Jval, gnorm; elapsed=time() - t0)
+            println("GN converged on gradient norm.")
+            break
+        end
+
+        Hgn = Jr' * Jr + μ * I
+        δ = -(Hgn \ g)
+
+        α = 1.0
+        accepted = false
+        w_trial = w
+        J_trial = Jval
+
+        while α >= min_step
+            w_candidate = project_w_profile(w .+ α .* δ)
+            r_candidate = residual_vector(w_candidate)
+            J_candidate = 0.5 * dot(r_candidate, r_candidate)
+
+            if J_candidate <= Jval + c1 * α * dot(g, δ)
+                w_trial = w_candidate
+                J_trial = J_candidate
+                accepted = true
+                break
+            end
+
+            α *= backtrack
+        end
+
+        if !accepted
+            μ *= 10.0
+            @printf("GN iter %2d rejected, increasing μ to %.3e\n", k, μ)
+            continue
+        end
+
+        step_avg = norm(w_trial .- w) / sqrt(length(w))
+        w = w_trial
+
+        μ = J_trial < Jval ? max(0.5 * μ, 1e-12) : min(10.0 * μ, 1e6)
+
+        push_history!(hist, "GN", w, J_trial, gnorm; elapsed=time() - t0)
+
+        @printf(
+            "%5d   %14.6e   %13.6e   %11.6f   %11.6e   %.3f s\n",
+            k,
+            J_trial,
+            gnorm,
+            α,
+            step_avg,
+            time() - t0,
+        )
+    end
+
+    println("\nExiting Gauss--Newton phase")
+    println("Total GN time = $(round(time() - t0; digits=3)) seconds")
+
+    return project_w_profile(w)
+end
+
+
+w_lbfgs_profile = project_w_profile(copy(Optim.minimizer(result_lbfgs)))
+
+J_lbfgs = cost(w_lbfgs_profile)
+g_lbfgs = ForwardDiff.gradient(cost, w_lbfgs_profile)
+
+push_history!(
+    hist,
+    "Fminbox-LBFGS-final",
+    w_lbfgs_profile,
+    J_lbfgs,
+    norm(g_lbfgs);
+    elapsed=time_lbfgs,
+)
+
+println("\n=== Fminbox-LBFGS complete ===")
+println("Cost after L-BFGS          = $(round(J_lbfgs; digits=12))")
+println("Gradient norm after L-BFGS = $(round(norm(g_lbfgs); digits=12))")
+println("Time L-BFGS                = $(round(time_lbfgs; digits=4)) s")
+
+time_gn = @elapsed begin
+    global w_opt_profile = gauss_newton_phase(w_lbfgs_profile; hist=hist)
+end
 
 J_opt = cost(w_opt_profile)
 g_opt = ForwardDiff.gradient(cost, w_opt_profile)
 
 push_history!(
     hist,
-    "Fminbox-LBFGS-final",
+    "GN-final",
     w_opt_profile,
     J_opt,
     norm(g_opt);
-    elapsed=time_lbfgs,
+    elapsed=time_lbfgs + time_gn,
 )
 
 profile_error = norm(w_opt_profile .- W0_TRUE_PROFILE) / sqrt(NX * NY)
@@ -517,6 +633,8 @@ println("Final cost        = $(round(J_opt; digits=12))")
 println("Final |g|         = $(round(norm(g_opt); digits=12))")
 println("Profile L2 error  = $(round(profile_error; digits=12))")
 println("Time L-BFGS       = $(round(time_lbfgs; digits=4)) s")
+println("Time GN           = $(round(time_gn; digits=4)) s")
+println("Total time        = $(round(time_lbfgs + time_gn; digits=4)) s")
 
 # =============================================================================
 # Snapshot helper

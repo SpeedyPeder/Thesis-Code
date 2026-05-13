@@ -202,7 +202,7 @@ end
 
 Ns = [200, 400, 800]
 use_pccu = false  # set to false to run with CU instead of PCCU
-cfl = 0.8
+cfl = 0.4
 T = 0.1
 θ = 1.0
 g = 10.0
