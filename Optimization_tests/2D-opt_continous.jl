@@ -56,10 +56,10 @@ const W_REG_SMOOTH = 1e-4
 const FD_CHUNK = 32
 
 const LBFGS_M = 10
-const LBFGS_MAX_ITERS = 10
+const LBFGS_MAX_ITERS = 30
 const LBFGS_G_TOL = 1e-8
 
-const GN_MAX_ITERS = 6
+const GN_MAX_ITERS = 10
 const GN_G_TOL = 1e-7
 const GN_DAMPING0 = 1e-6
 const GN_ARMIJO_C1 = 1e-6
@@ -732,7 +732,7 @@ end
 
 display(fig)
 
-fig_file = joinpath(SAVE_DIR, "optimization_2d_periodic_epsilon_interface.png")
+fig_file = joinpath(SAVE_DIR, "optimization_2d_periodic_epsilon_interface_longrun.png")
 save(fig_file, fig)
 
 println("Saved figure to: $fig_file")
