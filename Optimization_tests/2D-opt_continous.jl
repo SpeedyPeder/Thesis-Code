@@ -50,6 +50,8 @@ const W_V1 = 1.0
 const W_REG_SMOOTH = 1e-4
 
 # Optimization settings
+const FD_CHUNK = 32
+
 const LBFGS_M = 10
 const LBFGS_MAX_ITERS = 10
 const LBFGS_G_TOL = 1e-8
@@ -396,7 +398,16 @@ function cost(wvec)
     return 0.5 * sum(abs2, r)
 end
 
-grad!(g, wvec) = ForwardDiff.gradient!(g, cost, wvec)
+function gradient_fd(wvec)
+    cfg = ForwardDiff.GradientConfig(cost, wvec, ForwardDiff.Chunk{FD_CHUNK}())
+    return ForwardDiff.gradient(cost, wvec, cfg)
+end
+
+function grad!(g, wvec)
+    cfg = ForwardDiff.GradientConfig(cost, wvec, ForwardDiff.Chunk{FD_CHUNK}())
+    ForwardDiff.gradient!(g, cost, wvec, cfg)
+    return g
+end
 
 # =============================================================================
 # History
