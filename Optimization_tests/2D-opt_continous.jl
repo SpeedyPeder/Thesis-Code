@@ -43,8 +43,11 @@ const OBS_STRIDE = 4
 const CELL_INDICES = [(i, j) for j in 1:OBS_STRIDE:NY for i in 1:OBS_STRIDE:NX]
 
 # Objective weights
+const USE_EPSILON_MISFIT = true
+
 const W_U1 = 1.0
 const W_V1 = 1.0
+const W_EPSILON = 0.2
 
 # Smoothness regularization for continuous interface
 const W_REG_SMOOTH = 1e-4
@@ -113,7 +116,7 @@ function compute_physical_w_bounds_profile()
         NX,
         NY;
         gc=GC,
-        boundary=SinFVM.NeumannBC(),
+        boundary=SinFVM.PeriodicBC(),
         extent=[XMIN XMAX; YMIN YMAX],
     )
 
@@ -178,7 +181,7 @@ function setup_twolayer_simulator_2d(; backend=SinFVM.make_cpu_backend(), wprofi
         NX,
         NY;
         gc=GC,
-        boundary=SinFVM.NeumannBC(),
+        boundary=SinFVM.PeriodicBC(),
         extent=[XMIN XMAX; YMIN YMAX],
     )
 
@@ -272,6 +275,9 @@ function (cb::ObservableRecorder)(time, sim)
         obs = observable_fields(sim, eq, grid)
 
         for (i, j) in cb.cell_indices
+            if USE_EPSILON_MISFIT
+                push!(cb.data, obs.ε[i, j])
+            end
             push!(cb.data, obs.u1[i, j])
             push!(cb.data, obs.v1[i, j])
         end
@@ -312,13 +318,22 @@ const EXACT_OBS = simulate_observations(
     cell_indices=CELL_INDICES,
 )
 
-const N_OBS_PAIRS = length(EXACT_OBS) ÷ 2
+const N_OBS_FIELDS = USE_EPSILON_MISFIT ? 3 : 2
+const N_OBS_POINTS_TOTAL = length(EXACT_OBS) ÷ N_OBS_FIELDS
 
-const U1_SCALE = max(maximum(abs.(EXACT_OBS[1:2:end])), 1e-2)
-const V1_SCALE = max(maximum(abs.(EXACT_OBS[2:2:end])), 1e-2)
+if USE_EPSILON_MISFIT
+    const EPSILON_SCALE = max(maximum(abs.(EXACT_OBS[1:3:end])), 1e-4)
+    const U1_SCALE      = max(maximum(abs.(EXACT_OBS[2:3:end])), 1e-2)
+    const V1_SCALE      = max(maximum(abs.(EXACT_OBS[3:3:end])), 1e-2)
+else
+    const EPSILON_SCALE = 1.0
+    const U1_SCALE      = max(maximum(abs.(EXACT_OBS[1:2:end])), 1e-2)
+    const V1_SCALE      = max(maximum(abs.(EXACT_OBS[2:2:end])), 1e-2)
+end
 
-const SCALE_U1 = sqrt(W_U1 / N_OBS_PAIRS) / U1_SCALE
-const SCALE_V1 = sqrt(W_V1 / N_OBS_PAIRS) / V1_SCALE
+const SCALE_EPSILON = sqrt(W_EPSILON / N_OBS_POINTS_TOTAL) / EPSILON_SCALE
+const SCALE_U1      = sqrt(W_U1 / N_OBS_POINTS_TOTAL) / U1_SCALE
+const SCALE_V1      = sqrt(W_V1 / N_OBS_POINTS_TOTAL) / V1_SCALE
 
 println("Generated synthetic observations:")
 println("  n_controls        = $(NX * NY)")
@@ -328,7 +343,7 @@ println("  domain            = [$(XMIN), $(XMAX)] × [$(YMIN), $(YMAX)] m")
 println("  T_END             = $T_END s = $(T_END / 60) min")
 println("  f                 = $CORIOLIS_F s⁻¹")
 println("  rotation period   = $(ROTATION_PERIOD) s = $(ROTATION_PERIOD / 60) min")
-println("  boundary          = Neumann")
+println("  boundary          = Periodic")
 println("  max |obs|         = $(maximum(abs.(EXACT_OBS)))")
 
 # =============================================================================
@@ -346,12 +361,19 @@ function residual_vector_misfit(wvec)
     )
 
     T = eltype(pred)
-    nmis = length(pred)
-    r = Vector{T}(undef, nmis)
+    r = similar(pred)
 
-    @inbounds for k in 1:2:nmis
-        r[k] = T(SCALE_U1) * (pred[k] - T(EXACT_OBS[k]))
-        r[k+1] = T(SCALE_V1) * (pred[k+1] - T(EXACT_OBS[k+1]))
+    if USE_EPSILON_MISFIT
+        @inbounds for k in 1:3:length(pred)
+            r[k]   = T(SCALE_EPSILON) * (pred[k]   - T(EXACT_OBS[k]))
+            r[k+1] = T(SCALE_U1)      * (pred[k+1] - T(EXACT_OBS[k+1]))
+            r[k+2] = T(SCALE_V1)      * (pred[k+2] - T(EXACT_OBS[k+2]))
+        end
+    else
+        @inbounds for k in 1:2:length(pred)
+            r[k]   = T(SCALE_U1) * (pred[k]   - T(EXACT_OBS[k]))
+            r[k+1] = T(SCALE_V1) * (pred[k+1] - T(EXACT_OBS[k+1]))
+        end
     end
 
     return r
@@ -447,7 +469,7 @@ function history_callback(hist, t0)
         w = project_w_profile(copy(optim_x(s)))
 
         Jphys = cost(w)
-        g = ForwardDiff.gradient(cost, w)
+        g = gradient_fd(w)
         gnorm = norm(g)
 
         push_history!(hist, "Fminbox-LBFGS", w, Jphys, gnorm; elapsed=time() - t0)
@@ -473,7 +495,7 @@ hist = History()
 w0_start = copy(W0_INIT_PROFILE)
 
 J0 = cost(w0_start)
-g0 = ForwardDiff.gradient(cost, w0_start)
+g0 = gradient_fd(w0_start)
 
 push_history!(hist, "initial", w0_start, J0, norm(g0); elapsed=0.0, force=true)
 
@@ -594,7 +616,7 @@ end
 w_lbfgs_profile = project_w_profile(copy(Optim.minimizer(result_lbfgs)))
 
 J_lbfgs = cost(w_lbfgs_profile)
-g_lbfgs = ForwardDiff.gradient(cost, w_lbfgs_profile)
+g_lbfgs = gradient_fd(w_lbfgs_profile)
 
 push_history!(
     hist,
@@ -615,7 +637,7 @@ time_gn = @elapsed begin
 end
 
 J_opt = cost(w_opt_profile)
-g_opt = ForwardDiff.gradient(cost, w_opt_profile)
+g_opt = gradient_fd(w_opt_profile)
 
 push_history!(
     hist,
@@ -710,7 +732,7 @@ end
 
 display(fig)
 
-fig_file = joinpath(SAVE_DIR, "optimization_2d_continuous_interface.png")
+fig_file = joinpath(SAVE_DIR, "optimization_2d_periodic_epsilon_interface.png")
 save(fig_file, fig)
 
 println("Saved figure to: $fig_file")
