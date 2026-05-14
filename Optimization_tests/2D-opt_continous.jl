@@ -5,29 +5,26 @@ using LinearAlgebra, Printf
 # Constants
 # =============================================================================
 
-const NX, NY, GC = 32, 32, 2
+const NX, NY, GC = 16, 16, 2
 
 # Physical 32 m × 32 m pool
-const XMIN, XMAX = 0.0, 32.0
-const YMIN, YMAX = 0.0, 32.0
+const XMIN, XMAX = 0.0, 16
+const YMIN, YMAX = 0.0, 16
 
 const CFL_2D = 0.2
 const DEPTH_CUT = 1e-4
 
 # Rotating pool: f = 10^(-2) s^(-1)
-const CORIOLIS_F = 1e-2
+const CORIOLIS_F = 5e-1
 const ROTATION_PERIOD = 2π / CORIOLIS_F
 
-# Simulate 12 minutes
-const T_END = 12.0 * 60.0
+# Simulate 3 minutes
+const T_END = 3 * 60.0
 
 const OBS_TIMES = [
     1.0 * 60.0,
     2.0 * 60.0,
     3.0 * 60.0,
-    4.0 * 60.0,
-    5.0 * 60.0,
-    6.0 * 60.0,
 ]
 
 # Interface w
@@ -57,10 +54,10 @@ const W_REG_SMOOTH = 1e-4
 const FD_CHUNK = 32
 
 const LBFGS_M = 10
-const LBFGS_MAX_ITERS = 20
+const LBFGS_MAX_ITERS = 10
 const LBFGS_G_TOL = 1e-8
 
-const GN_MAX_ITERS = 10
+const GN_MAX_ITERS = 6
 const GN_G_TOL = 1e-7
 const GN_DAMPING0 = 1e-6
 const GN_ARMIJO_C1 = 1e-6
@@ -86,8 +83,8 @@ function make_bottom_cos_sin_2d(; backend, grid)
 
         B[i, j] =
             -0.3+
-            0.04 * cos(2π * x / 32.0) +
-            0.03 * sin(2π * y / 32.0)
+            0.04 * cos(2π * x / 16.0) +
+            0.03 * sin(2π * y / 16.0)
     end
 
     return SinFVM.BottomTopography2D(B, backend, grid)
