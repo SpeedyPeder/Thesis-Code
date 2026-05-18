@@ -111,7 +111,7 @@ function compute_physical_w_bounds_profile()
         NX,
         NY;
         gc=GC,
-        boundary=SinFVM.WallBC(),
+        boundary=SinFVM.PeriodicBC(),
         extent=[XMIN XMAX; YMIN YMAX],
     )
 
@@ -182,7 +182,7 @@ function setup_twolayer_simulator_2d(; backend=SinFVM.make_cpu_backend(), wprofi
         NX,
         NY;
         gc=GC,
-        boundary=SinFVM.WallBC(),
+        boundary=SinFVM.PeriodicBC(),
         extent=[XMIN XMAX; YMIN YMAX],
     )
 
@@ -347,7 +347,7 @@ println("  domain            = [$(XMIN), $(XMAX)] × [$(YMIN), $(YMAX)] m")
 println("  T_END             = $T_END s = $(T_END / 60) min")
 println("  f                 = $CORIOLIS_F s⁻¹")
 println("  rotation period   = $(ROTATION_PERIOD) s = $(ROTATION_PERIOD / 60) min")
-println("  boundary          = Wall")
+println("  boundary          = Periodic")
 println("  initial ε         = flat")
 println("  epsilon misfit    = $(USE_EPSILON_MISFIT)")
 println("  max |obs|         = $(maximum(abs.(EXACT_OBS)))")
