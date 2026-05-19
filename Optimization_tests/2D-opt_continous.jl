@@ -15,7 +15,7 @@ const CFL_2D = 0.2
 const DEPTH_CUT = 1e-4
 
 # Rotating pool: f = 10^(-2) s^(-1)
-const CORIOLIS_F = 5e-1
+const CORIOLIS_F = 5e-2
 const ROTATION_PERIOD = 2π / CORIOLIS_F
 
 # Simulate 3 minutes

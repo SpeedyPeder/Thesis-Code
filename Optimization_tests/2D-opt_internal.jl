@@ -15,7 +15,7 @@ const CFL_2D = 0.2
 const DEPTH_CUT = 1e-4
 
 # Rotating pool
-const CORIOLIS_F = 5e-1
+const CORIOLIS_F = 5e-2
 const ROTATION_PERIOD = 2π / CORIOLIS_F
 
 # Simulate 3 minutes
@@ -109,7 +109,7 @@ function compute_physical_w_bounds_profile()
         NX,
         NY;
         gc=GC,
-        boundary=SinFVM.NeumannBC(),
+        boundary=SinFVM.PeriodicBC(),
         extent=[XMIN XMAX; YMIN YMAX],
     )
 
@@ -180,7 +180,7 @@ function setup_twolayer_simulator_2d(; backend=SinFVM.make_cpu_backend(), wprofi
         NX,
         NY;
         gc=GC,
-        boundary=SinFVM.NeumannBC(),
+        boundary=SinFVM.PeriodicBC(),
         extent=[XMIN XMAX; YMIN YMAX],
     )
 
@@ -192,7 +192,9 @@ function setup_twolayer_simulator_2d(; backend=SinFVM.make_cpu_backend(), wprofi
         ρ2=T(1.00),
         g=T(9.81),
         depth_cutoff=T(DEPTH_CUT),
-    )
+        eigenvalue_method = :new,
+        hyperbolicity_correction = true,
+        )
 
     rec = SinFVM.LinearLimiterReconstruction(SinFVM.MinmodLimiter(1.0))
     flux = SinFVM.PathConservativeCentralUpwind(eq)
@@ -333,7 +335,7 @@ println("  domain            = [$(XMIN), $(XMAX)] × [$(YMIN), $(YMAX)] m")
 println("  T_END             = $T_END s = $(T_END / 60) min")
 println("  f                 = $CORIOLIS_F s⁻¹")
 println("  rotation period   = $(ROTATION_PERIOD) s = $(ROTATION_PERIOD / 60) min")
-println("  boundary          = Neumann")
+println("  boundary          = Periodic")
 println("  initial ε         = flat")
 println("  max |obs|         = $(maximum(abs.(EXACT_OBS)))")
 
