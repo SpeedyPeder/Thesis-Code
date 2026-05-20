@@ -19,6 +19,9 @@ mkdir -p /cluster/work/pederava/idun_output/initialguess_sensitivity
 # module load Julia/1.10.4
 
 export JULIA_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+
 export IDUN_OUTPUT_DIR=/cluster/work/pederava/idun_output/initialguess_sensitivity
 
 # Main tuning parameters
@@ -27,16 +30,17 @@ export RUN_GN_AFTER_LBFGS=false
 export GN_AFTER_LBFGS_ITERS=1
 export MAKE_PLOTS=true
 
-# Optional: can be useful if BLAS threading otherwise oversubscribes.
-export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK}
-export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
-
-cd "/cluster/home/pederava/master_thesis/Thesis Code"
+cd "/cluster/home/pederava/master_thesis/Thesis Code/Optimization_tests"
 
 echo "Starting sensitivity array task ${SLURM_ARRAY_TASK_ID}"
 echo "Running on host: $(hostname)"
+echo "Working directory: $(pwd)"
 echo "Output directory: ${IDUN_OUTPUT_DIR}"
 echo "Start time: $(date)"
+echo "SLURM job ID: ${SLURM_JOB_ID}"
+echo "SLURM array task ID: ${SLURM_ARRAY_TASK_ID}"
+echo "CPUs per task: ${SLURM_CPUS_PER_TASK}"
+echo "Julia threads: ${JULIA_NUM_THREADS}"
 
 julia --project=. 2D-opt_initialguess_sensitivity_idun.jl ${SLURM_ARRAY_TASK_ID}
 
