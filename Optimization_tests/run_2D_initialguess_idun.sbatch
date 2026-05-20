@@ -2,10 +2,11 @@
 #SBATCH --job-name=2D_initguess
 #SBATCH --account=share-ie-imf
 #SBATCH --partition=CPUQ
-#SBATCH --time=15:00:00
-#SBATCH --cpus-per-task=8
+#SBATCH --time=01:00:00
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --array=1-7
+#SBATCH --array=1-7%1
 #SBATCH --output=/cluster/work/pederava/idun_output/logs/2D_initguess_%A_%a.out
 #SBATCH --error=/cluster/work/pederava/idun_output/logs/2D_initguess_%A_%a.err
 
