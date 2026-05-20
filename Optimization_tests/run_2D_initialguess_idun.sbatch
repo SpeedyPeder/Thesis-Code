@@ -23,7 +23,7 @@ export JULIA_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
-export IDUN_OUTPUT_DIR=/cluster/work/pederava/idun_output/initialguess
+export IDUN_OUTPUT_DIR="/cluster/home/pederava/master_thesis/Thesis Code/idun_output"
 
 # Main tuning parameters
 export LBFGS_MAX_ITERS=6
