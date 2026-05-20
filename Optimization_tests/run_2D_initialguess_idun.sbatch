@@ -2,11 +2,11 @@
 #SBATCH --job-name=2D_initguess
 #SBATCH --account=share-ie-imf
 #SBATCH --partition=CPUQ
-#SBATCH --time=01:00:00
-#SBATCH --nodes=1
+#SBATCH --time=02:00:00
+#SBATCH --nodes=2
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
-#SBATCH --array=1-7%1
+#SBATCH --mem=8G
+#SBATCH --array=2-7%1
 #SBATCH --output=/cluster/work/pederava/idun_output/logs/2D_initguess_%A_%a.out
 #SBATCH --error=/cluster/work/pederava/idun_output/logs/2D_initguess_%A_%a.err
 
@@ -23,7 +23,7 @@ export JULIA_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
-export IDUN_OUTPUT_DIR=/cluster/work/pederava/idun_output/initialguess
+export IDUN_OUTPUT_DIR="/cluster/home/pederava/master_thesis/Thesis Code/idun_output"
 
 # Main tuning parameters
 export LBFGS_MAX_ITERS=6
@@ -44,6 +44,6 @@ echo "SLURM array task ID: ${SLURM_ARRAY_TASK_ID}"
 echo "CPUs per task: ${SLURM_CPUS_PER_TASK}"
 echo "Julia threads: ${JULIA_NUM_THREADS}"
 
-julia --project=. 2D-opt_initialguess_idun.jl ${SLURM_ARRAY_TASK_ID}
+julia --project=.. 2D-opt_initialguess_idun.jl ${SLURM_ARRAY_TASK_ID}
 
 echo "End time: $(date)"
