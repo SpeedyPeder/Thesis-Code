@@ -27,12 +27,12 @@ $env:SKIP_EXISTING = "true"
 
 $LogFile = Join-Path $OutputDir "run_initialguess_cases_6_7_pc.log"
 
-"Starting initial-guess cases 6 and 7 at $(Get-Date)" | Tee-Object -FilePath $LogFile -Append -Encoding UTF8
-"ScriptDir = $ScriptDir" | Tee-Object -FilePath $LogFile -Append -Encoding UTF8
-"OutputDir = $OutputDir" | Tee-Object -FilePath $LogFile -Append -Encoding UTF8
+"Starting initial-guess cases 6 and 7 at $(Get-Date)" | Tee-Object -FilePath $LogFile -Append
+"ScriptDir = $ScriptDir" | Tee-Object -FilePath $LogFile -Append
+"OutputDir = $OutputDir" | Tee-Object -FilePath $LogFile -Append
 
 function Run-JuliaCase($CaseNumber, $CaseName) {
-    "Starting case $CaseNumber = $CaseName at $(Get-Date)" | Tee-Object -FilePath $LogFile -Append -Encoding UTF8
+    "Starting case $CaseNumber = $CaseName at $(Get-Date)" | Tee-Object -FilePath $LogFile -Append
 
     cmd /c "julia --project=.. .\2D-opt_initialguess_pc.jl $CaseNumber >> `"$LogFile`" 2>&1"
 
@@ -40,13 +40,13 @@ function Run-JuliaCase($CaseNumber, $CaseName) {
         throw "Julia failed for case $CaseNumber = $CaseName with exit code $LASTEXITCODE. Check log: $LogFile"
     }
 
-    "Finished case $CaseNumber = $CaseName at $(Get-Date)" | Tee-Object -FilePath $LogFile -Append -Encoding UTF8
+    "Finished case $CaseNumber = $CaseName at $(Get-Date)" | Tee-Object -FilePath $LogFile -Append
 }
 
 Run-JuliaCase 6 "shifted"
 Run-JuliaCase 7 "random"
 
-"Combining finished runs at $(Get-Date)" | Tee-Object -FilePath $LogFile -Append -Encoding UTF8
+"Combining finished runs at $(Get-Date)" | Tee-Object -FilePath $LogFile -Append
 
 cmd /c "julia --project=.. .\2D-opt_initialguess_pc.jl combine >> `"$LogFile`" 2>&1"
 
@@ -54,4 +54,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "Julia combine failed with exit code $LASTEXITCODE. Check log: $LogFile"
 }
 
-"Finished all initial-guess case 6 and 7 runs at $(Get-Date)" | Tee-Object -FilePath $LogFile -Append -Encoding UTF8
+"Finished all initial-guess case 6 and 7 runs at $(Get-Date)" | Tee-Object -FilePath $LogFile -Append
