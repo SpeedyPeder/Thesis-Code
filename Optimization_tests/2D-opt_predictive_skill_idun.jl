@@ -18,14 +18,12 @@ const DEPTH_CUT = 1e-4
 const CORIOLIS_F = 5e-2
 const ROTATION_PERIOD = 2π / CORIOLIS_F
 
-# Training/observation period
-const T_END = 3 * 60.0
+# Training/observation period.
+# Only these times are used in the cost function.
+const OBS_TIMES = [10, 20, 30]
 
-const OBS_TIMES = [
-    1.0 * 60.0,
-    2.0 * 60.0,
-    3.0 * 60.0,
-]
+const TRAIN_END = maximum(OBS_TIMES)
+
 
 # Future times used only for validation/predictive skill.
 # These are outside the observation/training period and are not used in the cost function.
@@ -35,7 +33,6 @@ const VALIDATION_TIMES = [
     6.0 * 60.0,
 ]
 
-const TRAIN_END = maximum(OBS_TIMES)
 const VALIDATION_END = maximum(VALIDATION_TIMES)
 
 # Interface w
@@ -75,7 +72,16 @@ const GN_ARMIJO_C1 = 1e-6
 const GN_BACKTRACK = 0.5
 const GN_MIN_STEP = 1e-3
 
-const SAVE_DIR = get(ENV, "IDUN_OUTPUT_DIR", "/cluster/work/pederava/idun_output/predictive_skill")
+# Output directory.
+# On Idun, set this with:
+#   export PREDICTIVE_SKILL_OUTPUT_DIR="/cluster/work/pederava/idun_output/predictive_skill"
+#
+# The old IDUN_OUTPUT_DIR variable is still accepted as a fallback.
+const SAVE_DIR = get(
+    ENV,
+    "PREDICTIVE_SKILL_OUTPUT_DIR",
+    get(ENV, "IDUN_OUTPUT_DIR", "/cluster/work/pederava/idun_output/predictive_skill"),
+)
 mkpath(SAVE_DIR)
 
 # =============================================================================
@@ -477,17 +483,17 @@ end
 
 
 # =============================================================================
-# Optimization settings for multi-start identifiability test
+# Optimization settings for multi-start predictive-skill test
 # =============================================================================
 
 # This script is meant to answer the question:
-#   How sensitive is the optimization procedure to the choice of initial guess?
+#   If the interface is calibrated using observations up to TRAIN_END,
+#   does the resulting two-layer simulation remain accurate at later times?
 #
-# The main idea is to solve the same calibration problem from several controlled
-# initial interface guesses. The runs are compared in terms of convergence,
-# final objective value, cost reduction, interface error and upper-layer velocity
-# errors. This tests whether the optimization procedure is robust or sensitive
-# to the starting point.
+# The calibration objective uses OBS_TIMES only. The optimized interface is then
+# validated at VALIDATION_TIMES, which are outside the training window. Running
+# several initial guesses also tests whether different calibrated interfaces have
+# similar or different predictive skill.
 
 const RUN_GN_AFTER_LBFGS = parse(Bool, get(ENV, "RUN_GN_AFTER_LBFGS", "false"))
 const GN_AFTER_LBFGS_ITERS = parse(Int, get(ENV, "GN_AFTER_LBFGS_ITERS", "1"))
@@ -1018,15 +1024,20 @@ end
 function parse_run_indices(n)
     if length(ARGS) >= 1
         arg1 = lowercase(String(ARGS[1]))
+
         if arg1 == "combine"
             return :combine
         elseif arg1 == "all"
             return collect(1:n)
+        elseif arg1 in ("remaining", "4-7", "last4")
+            return collect(4:min(7, n))
         else
             return [parse(Int, ARGS[1])]
         end
+
     elseif haskey(ENV, "SLURM_ARRAY_TASK_ID")
         return [parse(Int, ENV["SLURM_ARRAY_TASK_ID"])]
+
     else
         # Safe default: run the first initial guess only, not all of them.
         # Use the argument "all" if you intentionally want a sequential full run.
@@ -1044,7 +1055,7 @@ end
 
 function combine_finished_runs(initial_guesses)
     println("\n============================================================")
-    println("Combining finished Idun array jobs")
+    println("Combining finished predictive-skill runs")
     println("============================================================")
 
     available = Tuple{String,Vector{Float64},Vector{Float64}}[]
@@ -1093,7 +1104,7 @@ function combine_finished_runs(initial_guesses)
 
     open(summary_file, "w") do io
         println(io, "2-D predictive-skill experiment")
-        println(io, "Combined after Idun job array")
+        println(io, "Combined after local/array runs")
         println(io, "====================================================")
         println(io, "NX = $NX, NY = $NY")
         println(io, "OBS_STRIDE = $OBS_STRIDE")
@@ -1124,7 +1135,7 @@ function combine_finished_runs(initial_guesses)
     end
 
     open(pairwise_file, "w") do io
-        println(io, "Pairwise comparison of optimized interfaces and upper-layer dynamics")
+        println(io, "Pairwise comparison at the end of the training period")
         println(io, "===================================================================")
         @printf(io, "%-14s  %-14s  %16s  %16s  %16s  %16s  %16s\n",
             "run A", "run B", "interface_RMSE", "u1_RMSE", "v1_RMSE", "uv_RMSE", "abs_cost_diff")
@@ -1162,9 +1173,41 @@ function combine_finished_runs(initial_guesses)
         end
     end
 
+    validation_pairwise_file = joinpath(SAVE_DIR, "2D_predictive_skill_pairwise_validation_end_combined.txt")
+    open(validation_pairwise_file, "w") do io
+        println(io, "Pairwise comparison at the final validation time")
+        println(io, "================================================")
+        println(io, "validation time = $VALIDATION_END")
+        @printf(io, "%-14s  %-14s  %16s  %16s  %16s  %16s\n",
+            "run A", "run B", "interface_RMSE", "u1_RMSE", "v1_RMSE", "uv_RMSE")
+
+        val_end_snaps = Dict(r.name => snapshot(r.w_final; label=r.name, t=VALIDATION_END) for r in results)
+
+        for ia in 1:length(results)-1
+            for ib in ia+1:length(results)
+                a = results[ia]
+                b = results[ib]
+                as = val_end_snaps[a.name]
+                bs = val_end_snaps[b.name]
+
+                @printf(
+                    io,
+                    "%-14s  %-14s  %16.6e  %16.6e  %16.6e  %16.6e\n",
+                    a.name,
+                    b.name,
+                    interface_rmse(a.w_final, b.w_final),
+                    u1_rmse(as, bs),
+                    v1_rmse(as, bs),
+                    vector_velocity_rmse(as, bs),
+                )
+            end
+        end
+    end
+
     println("Saved combined summary to:  $summary_file")
     println("Saved combined pairwise to: $pairwise_file")
     println("Saved validation-by-time to: $pertime_file")
+    println("Saved validation pairwise to: $validation_pairwise_file")
 
     if MAKE_PLOTS
         nplots = length(results) + 1
@@ -1291,7 +1334,7 @@ end
 # =============================================================================
 
 println("\n============================================================")
-println("2-D predictive-skill experiment on Idun")
+println("2-D predictive-skill experiment")
 println("============================================================")
 println("SAVE_DIR = $SAVE_DIR")
 println("L-BFGS iterations per guess = $LBFGS_MAX_ITERS")
@@ -1311,6 +1354,15 @@ else
         end
 
         name, w0 = initial_guesses[idx]
+
+        skip_existing = parse(Bool, get(ENV, "SKIP_EXISTING", "true"))
+        summary_file = output_prefix(name) * "_summary.txt"
+
+        if skip_existing && isfile(summary_file)
+            println("\nSkipping initial guess $idx / $(length(initial_guesses)): $name")
+            println("Existing summary found: $summary_file")
+            continue
+        end
 
         println("\n============================================================")
         println("Running initial guess $idx / $(length(initial_guesses)): $name")
