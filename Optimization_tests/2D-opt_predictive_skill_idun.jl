@@ -7,42 +7,52 @@ using LinearAlgebra, Printf, Random, Statistics, DelimitedFiles
 
 const NX, NY, GC = 16, 16, 2
 
-# Physical 32 m × 32 m pool
-const XMIN, XMAX = 0.0, 16
-const YMIN, YMAX = 0.0, 16
+# Physical 16 m × 16 m pool
+const XMIN, XMAX = 0.0, 16.0
+const YMIN, YMAX = 0.0, 16.0
 
 const CFL_2D = 0.2
 const DEPTH_CUT = 1e-4
 
-# Rotating pool: f = 10^(-2) s^(-1)
+# Rotating pool: f = 5e-2 s^(-1)
 const CORIOLIS_F = 5e-2
 const ROTATION_PERIOD = 2π / CORIOLIS_F
 
 # Training/observation period.
-# Only these times are used in the cost function.
-const OBS_TIMES = [10, 20, 30]
+# Only these times are used in the objective function.
+const OBS_TIMES = [
+    10.0,
+    20.0,
+    30.0,
+]
 
 const TRAIN_END = maximum(OBS_TIMES)
 
+# Keep T_END as alias for the end of the calibration/training window.
+const T_END = TRAIN_END
 
 # Future times used only for validation/predictive skill.
-# These are outside the observation/training period and are not used in the cost function.
+# These are outside the observation/training period.
 const VALIDATION_TIMES = [
-    4.0 * 60.0,
-    5.0 * 60.0,
-    6.0 * 60.0,
+    60.0,
+    90.0,
+    130.0,
+    150.0,
+    180.0,
 ]
 
 const VALIDATION_END = maximum(VALIDATION_TIMES)
 
-# Interface w
-const W0_INIT_CONST = -0.15
-const W0_TRUE_MEAN = -0.120
-const W0_TRUE_AMP = 0.025
+# Interface w.
+# With ε ≈ 0 and B ≈ -12, this gives h1 ≈ 4 m and h2 ≈ 8 m.
+const W0_INIT_CONST = -4.50
+const W0_TRUE_MEAN = -4.00
+const W0_TRUE_AMP = 0.25
 
-# Initial free surface ε
+# Initial free surface ε.
+# Small surface bump relative to total depth.
 const EPSILON_BACKGROUND = 0.0
-const EPSILON_BUMP_AMP = 0.015
+const EPSILON_BUMP_AMP = 0.05
 const EPSILON_BUMP_CENTER_X = 0.5 * (XMIN + XMAX)
 const EPSILON_BUMP_CENTER_Y = 0.5 * (YMIN + YMAX)
 const EPSILON_BUMP_RADIUS = 4.0
@@ -55,14 +65,15 @@ const CELL_INDICES = [(i, j) for j in 1:OBS_STRIDE:NY for i in 1:OBS_STRIDE:NX]
 const W_U1 = 1.0
 const W_V1 = 1.0
 
-# Smoothness regularization for continuous interface
-const W_REG_SMOOTH = 1e-4
+# Smoothness regularization for continuous interface.
+# Slightly reduced because the interface variations are now O(0.1 m), not O(0.01 m).
+const W_REG_SMOOTH = 1e-5
 
 # Optimization settings
-const FD_CHUNK = 32
+const FD_CHUNK = 4
 
 const LBFGS_M = 10
-const LBFGS_MAX_ITERS = parse(Int, get(ENV, "LBFGS_MAX_ITERS", "6"))
+const LBFGS_MAX_ITERS = parse(Int, get(ENV, "LBFGS_MAX_ITERS", "10"))
 const LBFGS_G_TOL = 1e-8
 
 const GN_MAX_ITERS = 4
@@ -73,10 +84,6 @@ const GN_BACKTRACK = 0.5
 const GN_MIN_STEP = 1e-3
 
 # Output directory.
-# On Idun, set this with:
-#   export PREDICTIVE_SKILL_OUTPUT_DIR="/cluster/work/pederava/idun_output/predictive_skill"
-#
-# The old IDUN_OUTPUT_DIR variable is still accepted as a fallback.
 const SAVE_DIR = get(
     ENV,
     "PREDICTIVE_SKILL_OUTPUT_DIR",
@@ -98,10 +105,12 @@ function make_bottom_cos_sin_2d(; backend, grid)
         x = x_faces[i]
         y = y_faces[j]
 
+        # Deeper pool: approximately 10--15 m deep.
+        # Mean depth is 12 m, with smooth variations of order 1 m.
         B[i, j] =
-            -0.3+
-            0.04 * cos(2π * x / 16.0) +
-            0.03 * sin(2π * y / 16.0)
+            -12.0 +
+            1.0 * cos(2π * x / 16.0) +
+            0.75 * sin(2π * y / 16.0)
     end
 
     return SinFVM.BottomTopography2D(B, backend, grid)
@@ -483,17 +492,17 @@ end
 
 
 # =============================================================================
-# Optimization settings for multi-start predictive-skill test
+# Optimization settings for multi-start identifiability test
 # =============================================================================
 
 # This script is meant to answer the question:
-#   If the interface is calibrated using observations up to TRAIN_END,
-#   does the resulting two-layer simulation remain accurate at later times?
+#   How sensitive is the optimization procedure to the choice of initial guess?
 #
-# The calibration objective uses OBS_TIMES only. The optimized interface is then
-# validated at VALIDATION_TIMES, which are outside the training window. Running
-# several initial guesses also tests whether different calibrated interfaces have
-# similar or different predictive skill.
+# The main idea is to solve the same calibration problem from several controlled
+# initial interface guesses. The runs are compared in terms of convergence,
+# final objective value, cost reduction, interface error and upper-layer velocity
+# errors. This tests whether the optimization procedure is robust or sensitive
+# to the starting point.
 
 const RUN_GN_AFTER_LBFGS = parse(Bool, get(ENV, "RUN_GN_AFTER_LBFGS", "false"))
 const GN_AFTER_LBFGS_ITERS = parse(Int, get(ENV, "GN_AFTER_LBFGS_ITERS", "1"))
@@ -1024,20 +1033,15 @@ end
 function parse_run_indices(n)
     if length(ARGS) >= 1
         arg1 = lowercase(String(ARGS[1]))
-
         if arg1 == "combine"
             return :combine
         elseif arg1 == "all"
             return collect(1:n)
-        elseif arg1 in ("remaining", "4-7", "last4")
-            return collect(4:min(7, n))
         else
             return [parse(Int, ARGS[1])]
         end
-
     elseif haskey(ENV, "SLURM_ARRAY_TASK_ID")
         return [parse(Int, ENV["SLURM_ARRAY_TASK_ID"])]
-
     else
         # Safe default: run the first initial guess only, not all of them.
         # Use the argument "all" if you intentionally want a sequential full run.
@@ -1055,7 +1059,7 @@ end
 
 function combine_finished_runs(initial_guesses)
     println("\n============================================================")
-    println("Combining finished predictive-skill runs")
+    println("Combining finished Idun array jobs")
     println("============================================================")
 
     available = Tuple{String,Vector{Float64},Vector{Float64}}[]
@@ -1104,7 +1108,7 @@ function combine_finished_runs(initial_guesses)
 
     open(summary_file, "w") do io
         println(io, "2-D predictive-skill experiment")
-        println(io, "Combined after local/array runs")
+        println(io, "Combined after Idun job array")
         println(io, "====================================================")
         println(io, "NX = $NX, NY = $NY")
         println(io, "OBS_STRIDE = $OBS_STRIDE")
@@ -1135,7 +1139,7 @@ function combine_finished_runs(initial_guesses)
     end
 
     open(pairwise_file, "w") do io
-        println(io, "Pairwise comparison at the end of the training period")
+        println(io, "Pairwise comparison of optimized interfaces and upper-layer dynamics")
         println(io, "===================================================================")
         @printf(io, "%-14s  %-14s  %16s  %16s  %16s  %16s  %16s\n",
             "run A", "run B", "interface_RMSE", "u1_RMSE", "v1_RMSE", "uv_RMSE", "abs_cost_diff")
@@ -1173,41 +1177,9 @@ function combine_finished_runs(initial_guesses)
         end
     end
 
-    validation_pairwise_file = joinpath(SAVE_DIR, "2D_predictive_skill_pairwise_validation_end_combined.txt")
-    open(validation_pairwise_file, "w") do io
-        println(io, "Pairwise comparison at the final validation time")
-        println(io, "================================================")
-        println(io, "validation time = $VALIDATION_END")
-        @printf(io, "%-14s  %-14s  %16s  %16s  %16s  %16s\n",
-            "run A", "run B", "interface_RMSE", "u1_RMSE", "v1_RMSE", "uv_RMSE")
-
-        val_end_snaps = Dict(r.name => snapshot(r.w_final; label=r.name, t=VALIDATION_END) for r in results)
-
-        for ia in 1:length(results)-1
-            for ib in ia+1:length(results)
-                a = results[ia]
-                b = results[ib]
-                as = val_end_snaps[a.name]
-                bs = val_end_snaps[b.name]
-
-                @printf(
-                    io,
-                    "%-14s  %-14s  %16.6e  %16.6e  %16.6e  %16.6e\n",
-                    a.name,
-                    b.name,
-                    interface_rmse(a.w_final, b.w_final),
-                    u1_rmse(as, bs),
-                    v1_rmse(as, bs),
-                    vector_velocity_rmse(as, bs),
-                )
-            end
-        end
-    end
-
     println("Saved combined summary to:  $summary_file")
     println("Saved combined pairwise to: $pairwise_file")
     println("Saved validation-by-time to: $pertime_file")
-    println("Saved validation pairwise to: $validation_pairwise_file")
 
     if MAKE_PLOTS
         nplots = length(results) + 1
@@ -1334,7 +1306,7 @@ end
 # =============================================================================
 
 println("\n============================================================")
-println("2-D predictive-skill experiment")
+println("2-D predictive-skill experiment on Idun")
 println("============================================================")
 println("SAVE_DIR = $SAVE_DIR")
 println("L-BFGS iterations per guess = $LBFGS_MAX_ITERS")
@@ -1354,15 +1326,6 @@ else
         end
 
         name, w0 = initial_guesses[idx]
-
-        skip_existing = parse(Bool, get(ENV, "SKIP_EXISTING", "true"))
-        summary_file = output_prefix(name) * "_summary.txt"
-
-        if skip_existing && isfile(summary_file)
-            println("\nSkipping initial guess $idx / $(length(initial_guesses)): $name")
-            println("Existing summary found: $summary_file")
-            continue
-        end
 
         println("\n============================================================")
         println("Running initial guess $idx / $(length(initial_guesses)): $name")
