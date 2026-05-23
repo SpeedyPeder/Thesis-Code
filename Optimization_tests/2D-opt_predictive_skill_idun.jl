@@ -7,45 +7,52 @@ using LinearAlgebra, Printf, Random, Statistics, DelimitedFiles
 
 const NX, NY, GC = 16, 16, 2
 
-# Physical 32 m × 32 m pool
-const XMIN, XMAX = 0.0, 16
-const YMIN, YMAX = 0.0, 16
+# Physical 16 m × 16 m pool
+const XMIN, XMAX = 0.0, 16.0
+const YMIN, YMAX = 0.0, 16.0
 
 const CFL_2D = 0.2
 const DEPTH_CUT = 1e-4
 
-# Rotating pool: f = 10^(-2) s^(-1)
+# Rotating pool: f = 5e-2 s^(-1)
 const CORIOLIS_F = 5e-2
 const ROTATION_PERIOD = 2π / CORIOLIS_F
 
-# Training/observation period
-const T_END = 3 * 60.0
-
+# Training/observation period.
+# Only these times are used in the objective function.
 const OBS_TIMES = [
-    1.0 * 60.0,
-    2.0 * 60.0,
-    3.0 * 60.0,
-]
-
-# Future times used only for validation/predictive skill.
-# These are outside the observation/training period and are not used in the cost function.
-const VALIDATION_TIMES = [
-    4.0 * 60.0,
-    5.0 * 60.0,
-    6.0 * 60.0,
+    10.0,
+    20.0,
+    30.0,
 ]
 
 const TRAIN_END = maximum(OBS_TIMES)
+
+# Keep T_END as alias for the end of the calibration/training window.
+const T_END = TRAIN_END
+
+# Future times used only for validation/predictive skill.
+# These are outside the observation/training period.
+const VALIDATION_TIMES = [
+    60.0,
+    90.0,
+    130.0,
+    150.0,
+    180.0,
+]
+
 const VALIDATION_END = maximum(VALIDATION_TIMES)
 
-# Interface w
-const W0_INIT_CONST = -0.15
-const W0_TRUE_MEAN = -0.120
-const W0_TRUE_AMP = 0.025
+# Interface w.
+# With ε ≈ 0 and B ≈ -12, this gives h1 ≈ 4 m and h2 ≈ 8 m.
+const W0_INIT_CONST = -4.50
+const W0_TRUE_MEAN = -4.00
+const W0_TRUE_AMP = 0.25
 
-# Initial free surface ε
+# Initial free surface ε.
+# Small surface bump relative to total depth.
 const EPSILON_BACKGROUND = 0.0
-const EPSILON_BUMP_AMP = 0.015
+const EPSILON_BUMP_AMP = 0.05
 const EPSILON_BUMP_CENTER_X = 0.5 * (XMIN + XMAX)
 const EPSILON_BUMP_CENTER_Y = 0.5 * (YMIN + YMAX)
 const EPSILON_BUMP_RADIUS = 4.0
@@ -58,14 +65,15 @@ const CELL_INDICES = [(i, j) for j in 1:OBS_STRIDE:NY for i in 1:OBS_STRIDE:NX]
 const W_U1 = 1.0
 const W_V1 = 1.0
 
-# Smoothness regularization for continuous interface
-const W_REG_SMOOTH = 1e-4
+# Smoothness regularization for continuous interface.
+# Slightly reduced because the interface variations are now O(0.1 m), not O(0.01 m).
+const W_REG_SMOOTH = 1e-5
 
 # Optimization settings
-const FD_CHUNK = 32
+const FD_CHUNK = 4
 
 const LBFGS_M = 10
-const LBFGS_MAX_ITERS = parse(Int, get(ENV, "LBFGS_MAX_ITERS", "6"))
+const LBFGS_MAX_ITERS = parse(Int, get(ENV, "LBFGS_MAX_ITERS", "10"))
 const LBFGS_G_TOL = 1e-8
 
 const GN_MAX_ITERS = 4
@@ -75,7 +83,12 @@ const GN_ARMIJO_C1 = 1e-6
 const GN_BACKTRACK = 0.5
 const GN_MIN_STEP = 1e-3
 
-const SAVE_DIR = get(ENV, "IDUN_OUTPUT_DIR", "/cluster/work/pederava/idun_output/predictive_skill")
+# Output directory.
+const SAVE_DIR = get(
+    ENV,
+    "PREDICTIVE_SKILL_OUTPUT_DIR",
+    get(ENV, "IDUN_OUTPUT_DIR", "/cluster/work/pederava/idun_output/predictive_skill"),
+)
 mkpath(SAVE_DIR)
 
 # =============================================================================
@@ -92,10 +105,12 @@ function make_bottom_cos_sin_2d(; backend, grid)
         x = x_faces[i]
         y = y_faces[j]
 
+        # Deeper pool: approximately 10--15 m deep.
+        # Mean depth is 12 m, with smooth variations of order 1 m.
         B[i, j] =
-            -0.3+
-            0.04 * cos(2π * x / 16.0) +
-            0.03 * sin(2π * y / 16.0)
+            -12.0 +
+            1.0 * cos(2π * x / 16.0) +
+            0.75 * sin(2π * y / 16.0)
     end
 
     return SinFVM.BottomTopography2D(B, backend, grid)
