@@ -1078,59 +1078,117 @@ function combine_finished_runs(initial_guesses)
     println("Saved combined summary to:  $summary_file")
     println("Saved combined pairwise to: $pairwise_file")
 
-    if MAKE_PLOTS
-        nplots = length(results) + 1
-        ncols = min(4, nplots)
-        nrows = cld(nplots, ncols)
+        if MAKE_PLOTS
+        # ---------------------------------------------------------------------
+        # Thesis plotting setup
+        # ---------------------------------------------------------------------
+        # We remove the random run from the combined figures to obtain a clean
+        # 2 × 3 layout. The random run is still included in the summary and
+        # pairwise comparison tables above.
+        plot_results = filter(r -> r.name != "random", results)
 
-        fig_int = Figure(size=(1800, 900), fontsize=16)
-        all_int = [("truth", W0_TRUE_PROFILE)]
-        append!(all_int, [(r.name, r.w_final) for r in results])
+        # Fixed order for the thesis figures. Only names that exist are included.
+        desired_order = ["truth", "flat_mid", "flat_high", "flat_low", "sin_x", "shifted"]
+
+        ncols = 3
+        fig_size = (1500, 900)
+        fig_fontsize = 18
+
+        # ---------------------------------------------------------------------
+        # Combined interface figure with common colorbar
+        # ---------------------------------------------------------------------
+        all_int_dict = Dict{String,Vector{Float64}}()
+        all_int_dict["truth"] = W0_TRUE_PROFILE
+
+        for r in plot_results
+            all_int_dict[r.name] = r.w_final
+        end
+
+        all_int = [(name, all_int_dict[name]) for name in desired_order if haskey(all_int_dict, name)]
+
+        all_w_values = reduce(vcat, [wprofile for (_, wprofile) in all_int])
+        clims_w = (minimum(all_w_values), maximum(all_w_values))
+
+        fig_int = Figure(size=fig_size, fontsize=fig_fontsize)
+
+        hm_int = nothing
 
         for (k, (name, wprofile)) in enumerate(all_int)
             row = div(k - 1, ncols) + 1
             col = mod(k - 1, ncols) + 1
+
             ax = Axis(fig_int[row, col], title="interface w: $name")
-            hm = heatmap!(ax, reshape(wprofile, NX, NY))
-            Colorbar(fig_int[row, col + ncols], hm)
+            hm_int = heatmap!(ax, reshape(wprofile, NX, NY); colorrange=clims_w)
+
             hidedecorations!(ax)
         end
 
-        int_file = joinpath(SAVE_DIR, "2D_initialguess_interfaces_combined.png")
+        Colorbar(fig_int[:, ncols + 1], hm_int, label="interface height w")
+
+        int_file = joinpath(SAVE_DIR, "2D_initialguess_interfaces_combined_2x3.png")
         save(int_file, fig_int)
-        println("Saved combined interface figure to: $int_file")
+        println("Saved combined 2x3 interface figure to: $int_file")
 
-        fig_u1 = Figure(size=(1800, 900), fontsize=16)
-        all_vel = [("truth", truth_snap)]
-        append!(all_vel, [(r.name, r.snap) for r in results])
+        # ---------------------------------------------------------------------
+        # Combined u1 figure with common colorbar
+        # ---------------------------------------------------------------------
+        all_vel_dict = Dict{String,Any}()
+        all_vel_dict["truth"] = truth_snap
+
+        for r in plot_results
+            all_vel_dict[r.name] = r.snap
+        end
+
+        all_vel = [(name, all_vel_dict[name]) for name in desired_order if haskey(all_vel_dict, name)]
+
+        all_u1_values = reduce(vcat, [vec(snap.u1) for (_, snap) in all_vel])
+        clims_u1 = (minimum(all_u1_values), maximum(all_u1_values))
+
+        fig_u1 = Figure(size=fig_size, fontsize=fig_fontsize)
+
+        hm_u1 = nothing
 
         for (k, (name, snap)) in enumerate(all_vel)
             row = div(k - 1, ncols) + 1
             col = mod(k - 1, ncols) + 1
-            ax = Axis(fig_u1[row, col], title="upper-layer u1: $name")
-            hm = heatmap!(ax, snap.u1)
-            Colorbar(fig_u1[row, col + ncols], hm)
+
+            ax = Axis(fig_u1[row, col], title="upper-layer u₁: $name")
+            hm_u1 = heatmap!(ax, snap.u1; colorrange=clims_u1)
+
             hidedecorations!(ax)
         end
 
-        u1_file = joinpath(SAVE_DIR, "2D_initialguess_upperlayer_u1_combined.png")
+        Colorbar(fig_u1[:, ncols + 1], hm_u1, label="u₁")
+
+        u1_file = joinpath(SAVE_DIR, "2D_initialguess_upperlayer_u1_combined_2x3.png")
         save(u1_file, fig_u1)
-        println("Saved combined u1 figure to: $u1_file")
+        println("Saved combined 2x3 u1 figure to: $u1_file")
 
-        fig_v1 = Figure(size=(1800, 900), fontsize=16)
+        # ---------------------------------------------------------------------
+        # Combined v1 figure with common colorbar
+        # ---------------------------------------------------------------------
+        all_v1_values = reduce(vcat, [vec(snap.v1) for (_, snap) in all_vel])
+        clims_v1 = (minimum(all_v1_values), maximum(all_v1_values))
+
+        fig_v1 = Figure(size=fig_size, fontsize=fig_fontsize)
+
+        hm_v1 = nothing
 
         for (k, (name, snap)) in enumerate(all_vel)
             row = div(k - 1, ncols) + 1
             col = mod(k - 1, ncols) + 1
-            ax = Axis(fig_v1[row, col], title="upper-layer v1: $name")
-            hm = heatmap!(ax, snap.v1)
-            Colorbar(fig_v1[row, col + ncols], hm)
+
+            ax = Axis(fig_v1[row, col], title="upper-layer v₁: $name")
+            hm_v1 = heatmap!(ax, snap.v1; colorrange=clims_v1)
+
             hidedecorations!(ax)
         end
 
-        v1_file = joinpath(SAVE_DIR, "2D_initialguess_upperlayer_v1_combined.png")
+        Colorbar(fig_v1[:, ncols + 1], hm_v1, label="v₁")
+
+        v1_file = joinpath(SAVE_DIR, "2D_initialguess_upperlayer_v1_combined_2x3.png")
         save(v1_file, fig_v1)
-        println("Saved combined v1 figure to: $v1_file")
+        println("Saved combined 2x3 v1 figure to: $v1_file")
     end
 end
 
