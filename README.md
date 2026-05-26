@@ -32,7 +32,7 @@ Important files include:
 - `Internal_Dambreak_baseline.jl`  
   Script used to generate the one-dimensional internal dam-break baseline example.
 
-- `shallow_water_twolayer_1D_hyp...jl`  
+- `shallow_water_twolayer_1D_hyperbolic.jl`  
   Script related to hyperbolicity tests for the one-dimensional two-layer shallow-water system.
 
 These scripts are mainly connected to the numerical-methodology part of the thesis.
@@ -70,7 +70,7 @@ Important files include:
 - `2D-opt_predictive_skill_pc.jl`  
   Two-dimensional predictive-skill experiment, where the optimized interface is tested outside the observation window.
 
-The suffix `_pc` indicates scripts adapted for local PC runs.
+The suffix `_pc` indicates scripts adapted for local PC runs, as they were intended to run on the IDUN computing cluster.
 
 ## Requirements
 
