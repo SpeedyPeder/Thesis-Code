@@ -64,7 +64,7 @@ const GN_ARMIJO_C1 = 1e-6
 const GN_BACKTRACK = 0.5
 const GN_MIN_STEP = 1e-3
 
-const SAVE_DIR = get(ENV, "IDUN_OUTPUT_DIR", "/cluster/work/pederava/idun_output/initialguess")
+const SAVE_DIR = get(ENV, "INITIAL_GUESS_OUTPUT_DIR", raw"C:\Users\peder\OneDrive - NTNU\År 5\Masteroppgave\Optimization\2-D_Optimization\Initial Guess")
 mkpath(SAVE_DIR)
 
 # =============================================================================
@@ -488,7 +488,7 @@ const RECORD_LBFGS_EACH_ITER = false
 # Keep the multi-start experiment cheap. Use a small number of deliberately
 # different initial guesses, and compare the final directional velocity
 # components u1 and v1 instead of only the speed.
-const USE_FULL_GUESS_SET = parse(Bool, get(ENV, "USE_FULL_GUESS_SET", "true"))
+const USE_FULL_GUESS_SET = parse(Bool, get(ENV, "USE_FULL_GUESS_SET", "false"))
 const PLOT_SPEED_TOO = parse(Bool, get(ENV, "PLOT_SPEED_TOO", "false"))
 
 # =============================================================================
@@ -658,7 +658,6 @@ function make_initial_guesses()
             ("flat_mid",  project_w_profile(fill(-0.150, NX * NY))),
             ("flat_high", project_w_profile(fill(-0.100, NX * NY))),
             ("shifted",   sinusoidal_guess(mean_value=W0_TRUE_MEAN, amp=W0_TRUE_AMP, mode=:shifted_truth)),
-            ("random",    smooth_random_interface(seed=2026, mean_value=-0.150, amp=0.020, nsweeps=20)),
         ]
     end
 end
@@ -962,14 +961,17 @@ function parse_run_indices(n)
             return :combine
         elseif arg1 == "all"
             return collect(1:n)
+        elseif arg1 in ("remaining", "last4", "4-7")
+            # For the PC overnight run after tasks 1--3 have already finished.
+            return collect(4:min(7, n))
         else
             return [parse(Int, ARGS[1])]
         end
     elseif haskey(ENV, "SLURM_ARRAY_TASK_ID")
         return [parse(Int, ENV["SLURM_ARRAY_TASK_ID"])]
     else
-        # Safe default: run the first initial guess only, not all of them.
-        # Use the argument "all" if you intentionally want a sequential full run.
+        # Safe default for local use: run only the first case.
+        # Use "all" to run the full default set sequentially.
         return [1]
     end
 end
@@ -981,6 +983,129 @@ function load_result_vector(name, suffix)
     end
     return vec(Float64.(readdlm(filename)))
 end
+
+
+function panel_layout(n)
+    if n <= 4
+        return 2, 2
+    elseif n <= 6
+        return 3, 2
+    else
+        return 4, cld(n, 4)
+    end
+end
+
+function symmetric_colorrange(values; min_abs=eps(Float64))
+    vmax = maximum(abs.(Float64.(values)))
+    vmax = max(vmax, min_abs)
+    return (-vmax, vmax)
+end
+
+function save_matrix(filename, A)
+    writedlm(filename, Float64.(A))
+end
+
+function plot_heatmap_grid(
+    panels,
+    values_fun;
+    filename,
+    colorbar_label,
+    title_prefix="",
+    colormap=:viridis,
+    symmetric=false,
+    fig_size=nothing,
+    fontsize=18,
+)
+    n = length(panels)
+    ncols, nrows = panel_layout(n)
+    fig_size === nothing && (fig_size = (500 * ncols + 160, 430 * nrows))
+
+    all_values = reduce(vcat, [vec(values_fun(item)) for item in panels])
+    clims = symmetric ? symmetric_colorrange(all_values) : (minimum(all_values), maximum(all_values))
+
+    fig = Figure(size=fig_size, fontsize=fontsize)
+    hm = nothing
+
+    for (k, item) in enumerate(panels)
+        name = item[1]
+        field = values_fun(item)
+
+        row = div(k - 1, ncols) + 1
+        col = mod(k - 1, ncols) + 1
+
+        title = isempty(title_prefix) ? string(name) : "$title_prefix: $name"
+        ax = Axis(fig[row, col], title=title)
+        hm = heatmap!(ax, field; colorrange=clims, colormap=colormap)
+        hidedecorations!(ax)
+    end
+
+    Colorbar(fig[:, ncols + 1], hm, label=colorbar_label)
+    save(filename, fig)
+    println("Saved figure to: $filename")
+end
+
+function plot_problem_setup()
+    sim, eq, grid = setup_twolayer_simulator_2d(
+        backend=SinFVM.make_cpu_backend(),
+        wprofile=Float64.(W0_TRUE_PROFILE),
+    )
+
+    obs = observable_fields(sim, eq, grid)
+
+    obs_mask = zeros(Float64, NX, NY)
+    for (i, j) in CELL_INDICES
+        obs_mask[i, j] = 1.0
+    end
+
+    panels = [
+        ("bathymetry B", Array(obs.Bcell)),
+        ("initial free surface ε₀", Array(obs.ε)),
+        ("true interface w₀,true", reshape(W0_TRUE_PROFILE, NX, NY)),
+        ("observation mask", obs_mask),
+    ]
+
+    plot_heatmap_grid(
+        panels,
+        item -> item[2];
+        filename=joinpath(SAVE_DIR, "2D_initialguess_problem_setup.png"),
+        colorbar_label="value",
+        title_prefix="",
+        colormap=:viridis,
+        symmetric=false,
+        fig_size=(1200, 900),
+        fontsize=18,
+    )
+end
+
+function save_combined_error_fields(results, truth_snap)
+    error_file = joinpath(SAVE_DIR, "2D_initialguess_error_summary_combined.csv")
+    open(error_file, "w") do io
+        println(io, "name,J_final,w_RMSE_true,u1_RMSE,v1_RMSE,uv_RMSE")
+        for r in results
+            @printf(
+                io,
+                "%s,%.16e,%.16e,%.16e,%.16e,%.16e\n",
+                r.name,
+                r.J_final,
+                r.profile_error,
+                u1_rmse(r.snap, truth_snap),
+                v1_rmse(r.snap, truth_snap),
+                vector_velocity_rmse(r.snap, truth_snap),
+            )
+        end
+    end
+    println("Saved combined error CSV to: $error_file")
+
+    for r in results
+        prefix = output_prefix(r.name)
+        save_matrix(prefix * "_initial_interface_error.txt", reshape(r.w0 .- W0_TRUE_PROFILE, NX, NY))
+        save_matrix(prefix * "_final_interface_error.txt", reshape(r.w_final .- W0_TRUE_PROFILE, NX, NY))
+        save_matrix(prefix * "_u1_error_tfinal.txt", r.snap.u1 .- truth_snap.u1)
+        save_matrix(prefix * "_v1_error_tfinal.txt", r.snap.v1 .- truth_snap.v1)
+        save_matrix(prefix * "_speed_error_tfinal.txt", r.snap.speed .- truth_snap.speed)
+    end
+end
+
 
 function combine_finished_runs(initial_guesses)
     println("\n============================================================")
@@ -1075,59 +1200,121 @@ function combine_finished_runs(initial_guesses)
     println("Saved combined summary to:  $summary_file")
     println("Saved combined pairwise to: $pairwise_file")
 
+    save_combined_error_fields(results, truth_snap)
+
     if MAKE_PLOTS
-        nplots = length(results) + 1
-        ncols = min(4, nplots)
-        nrows = cld(nplots, ncols)
+        # ---------------------------------------------------------------------
+        # Thesis plotting setup
+        # ---------------------------------------------------------------------
+        # In the default thesis run we use four initial guesses, which gives a
+        # clean 2 × 2 layout. If old/full result files are present, the layout is
+        # chosen automatically.
+        desired_order = ["flat_mid", "flat_high", "flat_low", "shifted", "sin_x", "sin_y", "random"]
 
-        fig_int = Figure(size=(1800, 900), fontsize=16)
-        all_int = [("truth", W0_TRUE_PROFILE)]
-        append!(all_int, [(r.name, r.w_final) for r in results])
+        plot_results = [r for name in desired_order for r in results if r.name == name]
 
-        for (k, (name, wprofile)) in enumerate(all_int)
-            row = div(k - 1, ncols) + 1
-            col = mod(k - 1, ncols) + 1
-            ax = Axis(fig_int[row, col], title="interface w: $name")
-            hm = heatmap!(ax, reshape(wprofile, NX, NY))
-            Colorbar(fig_int[row, col + ncols], hm)
-            hidedecorations!(ax)
+        # Add any remaining available results that were not in desired_order.
+        for r in results
+            if !(r.name in [pr.name for pr in plot_results])
+                push!(plot_results, r)
+            end
         end
 
-        int_file = joinpath(SAVE_DIR, "2D_initialguess_interfaces_combined.png")
-        save(int_file, fig_int)
-        println("Saved combined interface figure to: $int_file")
+        # Problem setup / true initial condition figure.
+        plot_problem_setup()
 
-        fig_u1 = Figure(size=(1800, 900), fontsize=16)
-        all_vel = [("truth", truth_snap)]
-        append!(all_vel, [(r.name, r.snap) for r in results])
+        # Initial and final interface error plots.
+        initial_panels = [(r.name, reshape(r.w0 .- W0_TRUE_PROFILE, NX, NY)) for r in plot_results]
+        final_interface_panels = [(r.name, reshape(r.w_final .- W0_TRUE_PROFILE, NX, NY)) for r in plot_results]
 
-        for (k, (name, snap)) in enumerate(all_vel)
-            row = div(k - 1, ncols) + 1
-            col = mod(k - 1, ncols) + 1
-            ax = Axis(fig_u1[row, col], title="upper-layer u1: $name")
-            hm = heatmap!(ax, snap.u1)
-            Colorbar(fig_u1[row, col + ncols], hm)
-            hidedecorations!(ax)
-        end
+        plot_heatmap_grid(
+            initial_panels,
+            item -> item[2];
+            filename=joinpath(SAVE_DIR, "2D_initialguess_initial_interface_error_combined.png"),
+            colorbar_label="w₀ - w₀,true",
+            title_prefix="initial error",
+            colormap=:RdBu,
+            symmetric=true,
+        )
 
-        u1_file = joinpath(SAVE_DIR, "2D_initialguess_upperlayer_u1_combined.png")
-        save(u1_file, fig_u1)
-        println("Saved combined u1 figure to: $u1_file")
+        plot_heatmap_grid(
+            final_interface_panels,
+            item -> item[2];
+            filename=joinpath(SAVE_DIR, "2D_initialguess_interface_error_combined.png"),
+            colorbar_label="w - w_true",
+            title_prefix="interface error",
+            colormap=:RdBu,
+            symmetric=true,
+        )
 
-        fig_v1 = Figure(size=(1800, 900), fontsize=16)
+        # Backwards-compatible filename: this used to show the actual interfaces,
+        # but now intentionally shows error to truth for the thesis discussion.
+        plot_heatmap_grid(
+            final_interface_panels,
+            item -> item[2];
+            filename=joinpath(SAVE_DIR, "2D_initialguess_interfaces_combined_2x3.png"),
+            colorbar_label="w - w_true",
+            title_prefix="interface error",
+            colormap=:RdBu,
+            symmetric=true,
+        )
 
-        for (k, (name, snap)) in enumerate(all_vel)
-            row = div(k - 1, ncols) + 1
-            col = mod(k - 1, ncols) + 1
-            ax = Axis(fig_v1[row, col], title="upper-layer v1: $name")
-            hm = heatmap!(ax, snap.v1)
-            Colorbar(fig_v1[row, col + ncols], hm)
-            hidedecorations!(ax)
-        end
+        # Final-time velocity errors relative to the truth simulation.
+        u1_panels = [(r.name, r.snap.u1 .- truth_snap.u1) for r in plot_results]
+        v1_panels = [(r.name, r.snap.v1 .- truth_snap.v1) for r in plot_results]
+        speed_panels = [(r.name, r.snap.speed .- truth_snap.speed) for r in plot_results]
 
-        v1_file = joinpath(SAVE_DIR, "2D_initialguess_upperlayer_v1_combined.png")
-        save(v1_file, fig_v1)
-        println("Saved combined v1 figure to: $v1_file")
+        plot_heatmap_grid(
+            u1_panels,
+            item -> item[2];
+            filename=joinpath(SAVE_DIR, "2D_initialguess_u1_error_combined.png"),
+            colorbar_label="u₁ - u₁,true",
+            title_prefix="u₁ error",
+            colormap=:RdBu,
+            symmetric=true,
+        )
+
+        plot_heatmap_grid(
+            v1_panels,
+            item -> item[2];
+            filename=joinpath(SAVE_DIR, "2D_initialguess_v1_error_combined.png"),
+            colorbar_label="v₁ - v₁,true",
+            title_prefix="v₁ error",
+            colormap=:RdBu,
+            symmetric=true,
+        )
+
+        plot_heatmap_grid(
+            speed_panels,
+            item -> item[2];
+            filename=joinpath(SAVE_DIR, "2D_initialguess_speed_error_combined.png"),
+            colorbar_label="speed - speed_true",
+            title_prefix="speed error",
+            colormap=:RdBu,
+            symmetric=true,
+        )
+
+        # Backwards-compatible filenames: these now show velocity errors, not
+        # the raw velocity fields.
+        plot_heatmap_grid(
+            u1_panels,
+            item -> item[2];
+            filename=joinpath(SAVE_DIR, "2D_initialguess_upperlayer_u1_combined_2x3.png"),
+            colorbar_label="u₁ - u₁,true",
+            title_prefix="u₁ error",
+            colormap=:RdBu,
+            symmetric=true,
+        )
+
+        plot_heatmap_grid(
+            v1_panels,
+            item -> item[2];
+            filename=joinpath(SAVE_DIR, "2D_initialguess_upperlayer_v1_combined_2x3.png"),
+            colorbar_label="v₁ - v₁,true",
+            title_prefix="v₁ error",
+            colormap=:RdBu,
+            symmetric=true,
+        )
     end
 end
 
@@ -1136,7 +1323,7 @@ end
 # =============================================================================
 
 println("\n============================================================")
-println("2-D initial-guess identifiability experiment on Idun")
+println("2-D initial-guess identifiability experiment")
 println("============================================================")
 println("SAVE_DIR = $SAVE_DIR")
 println("L-BFGS iterations per guess = $LBFGS_MAX_ITERS")
@@ -1157,6 +1344,15 @@ else
         end
 
         name, w0 = initial_guesses[idx]
+
+        # Avoid overwriting completed runs unless explicitly requested.
+        skip_existing = parse(Bool, get(ENV, "SKIP_EXISTING", "true"))
+        summary_file = output_prefix(name) * "_summary.txt"
+        if skip_existing && isfile(summary_file)
+            println("\nSkipping initial guess $idx / $(length(initial_guesses)): $name")
+            println("Existing summary found: $summary_file")
+            continue
+        end
 
         println("\n============================================================")
         println("Running initial guess $idx / $(length(initial_guesses)): $name")

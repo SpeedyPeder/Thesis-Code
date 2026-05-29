@@ -70,13 +70,13 @@ const W_V1 = 1.0
 const W_REG_SMOOTH = 1e-5
 
 # Optimization settings
-const FD_CHUNK = 4
+const FD_CHUNK = 16
 
 const LBFGS_M = 10
 const LBFGS_MAX_ITERS = parse(Int, get(ENV, "LBFGS_MAX_ITERS", "10"))
 const LBFGS_G_TOL = 1e-8
 
-const GN_MAX_ITERS = 4
+const GN_MAX_ITERS = 3
 const GN_G_TOL = 1e-7
 const GN_DAMPING0 = 1e-6
 const GN_ARMIJO_C1 = 1e-6
