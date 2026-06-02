@@ -1,0 +1,16 @@
+2-D initial guess optimization result
+====================================
+name = flat_low
+NX = 16
+NY = 16
+OBS_STRIDE = 4
+LBFGS_MAX_ITERS = 6
+RUN_GN_AFTER_LBFGS = false
+GN_AFTER_LBFGS_ITERS = 1
+J0 = 0.006588459956357286
+J_lbfgs = 0.0003948109868619575
+J_final = 0.0003948109868619575
+w_RMSE_true = 0.061553401874992926
+time_lbfgs = 1534.010911983
+time_gn = 0.0
+time_total = 1534.010911983
