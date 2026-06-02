@@ -1,0 +1,16 @@
+2-D initial guess optimization result
+====================================
+name = sin_x
+NX = 16
+NY = 16
+OBS_STRIDE = 4
+LBFGS_MAX_ITERS = 6
+RUN_GN_AFTER_LBFGS = false
+GN_AFTER_LBFGS_ITERS = 1
+J0 = 0.02015186083838388
+J_lbfgs = 0.00179923284421851
+J_final = 0.00179923284421851
+w_RMSE_true = 0.044632713745755705
+time_lbfgs = 1644.851814566
+time_gn = 0.0
+time_total = 1644.851814566
