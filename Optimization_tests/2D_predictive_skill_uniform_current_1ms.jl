@@ -110,6 +110,13 @@ const SAVE_DIR = get(
 )
 mkpath(SAVE_DIR)
 
+
+const W_ERROR_LIM = 0.55
+const VEL_ERROR_LIM = 2.5e-3
+
+const W_ERROR_RANGE = (-W_ERROR_LIM, W_ERROR_LIM)
+const VEL_ERROR_RANGE = (-VEL_ERROR_LIM, VEL_ERROR_LIM)
+const SPEED_ERROR_RANGE = (-VEL_ERROR_LIM, VEL_ERROR_LIM)
 # =============================================================================
 # Bathymetry
 # =============================================================================
