@@ -72,7 +72,7 @@ const EPSILON_BUMP_RADIUS = 4.0
 # If you want upper-layer-only shear instead, set U2_BACKGROUND = 0.0.
 const U1_BACKGROUND = 1.0
 const V1_BACKGROUND = 0.0
-const U2_BACKGROUND = 0.0
+const U2_BACKGROUND = 1.0
 const V2_BACKGROUND = 0.0
 
 # Observation locations
@@ -1069,6 +1069,8 @@ function plot_rmse_time_series(run_rows; filename, title="RMSE against truth ove
         vlines!(ax, [tobs], linestyle=:dash, linewidth=1)
     end
 
+    ylims!(ax, 1e-6, 1e-2)
+
     axislegend(ax, position=:rc)
     save(filename, fig)
     println("Saved RMSE time-series figure to: $filename")
@@ -1088,14 +1090,18 @@ function plot_error_heatmap_grid(
     filename,
     fig_size=(1100, 900),
     fontsize=16,
+    colorrange=nothing,
 )
     nplots_local = length(panels)
 
-    # Force a two-column layout. With the default four initial guesses this
-    # gives a clean 2 × 2 figure.
     ncols_local = 2
     nrows_local = cld(nplots_local, ncols_local)
-    clims = symmetric_colorrange_from_panels(panels, values_fun)
+
+    if colorrange === nothing
+        clims = symmetric_colorrange_from_panels(panels, values_fun)
+    else
+        clims = colorrange
+    end
 
     fig = Figure(size=fig_size, fontsize=fontsize)
     hm = nothing
@@ -1119,7 +1125,6 @@ end
 
 function plot_initial_condition_grid(initial_guesses; filename)
     panels = [(name, reshape(w0 .- W0_TRUE_PROFILE, NX, NY)) for (name, w0) in initial_guesses]
-    clims = symmetric_colorrange_from_panels(panels, item -> item[2])
 
     fig = Figure(size=(1100, 900), fontsize=16)
     hm = nothing
@@ -1133,7 +1138,7 @@ function plot_initial_condition_grid(initial_guesses; filename)
         col = mod(k - 1, ncols_local) + 1
 
         ax = Axis(fig[row, col], title="initial guess: $name")
-        hm = heatmap!(ax, field; colorrange=clims, colormap=:RdBu)
+        hm = heatmap!(ax, field; colorrange=W_ERROR_RANGE, colormap=:RdBu)
         hidedecorations!(ax)
     end
 
@@ -1141,7 +1146,6 @@ function plot_initial_condition_grid(initial_guesses; filename)
     save(filename, fig)
     println("Saved initial-condition figure to: $filename")
 end
-
 
 # =============================================================================
 # Idun run/combine mode
