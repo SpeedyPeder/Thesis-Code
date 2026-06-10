@@ -72,7 +72,7 @@ const EPSILON_BUMP_RADIUS = 4.0
 # If you want upper-layer-only shear instead, set U2_BACKGROUND = 0.0.
 const U1_BACKGROUND = 1.0
 const V1_BACKGROUND = 0.0
-const U2_BACKGROUND = 1.0
+const U2_BACKGROUND = 0.0
 const V2_BACKGROUND = 0.0
 
 # Observation locations
