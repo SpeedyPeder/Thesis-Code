@@ -1088,8 +1088,8 @@ function plot_error_heatmap_grid(
     title_prefix,
     colorbar_label,
     filename,
-    fig_size=(1100, 900),
-    fontsize=16,
+    fig_size=(1250, 1000),
+    fontsize=22,
     colorrange=nothing,
 )
     nplots_local = length(panels)
@@ -1113,20 +1113,64 @@ function plot_error_heatmap_grid(
         row = div(k - 1, ncols_local) + 1
         col = mod(k - 1, ncols_local) + 1
 
-        ax = Axis(fig[row, col], title="$title_prefix: $name")
+        ax = Axis(
+            fig[row, col],
+            title="$title_prefix: $name",
+            titlesize=24,
+        )
+
         hm = heatmap!(ax, field; colorrange=clims, colormap=:RdBu)
         hidedecorations!(ax)
     end
 
-    Colorbar(fig[:, ncols_local + 1], hm, label=colorbar_label)
+    Colorbar(
+        fig[:, ncols_local + 1],
+        hm;
+        label=colorbar_label,
+        labelsize=22,
+        ticklabelsize=18,
+    )
+
+    colgap!(fig.layout, 18)
+    rowgap!(fig.layout, 18)
+
     save(filename, fig)
     println("Saved error figure to: $filename")
+end
+
+function plot_interface_cross_section(results; filename)
+    jmid = cld(NY, 2)
+
+    x = collect(range(XMIN + (XMAX - XMIN) / (2NX),
+                      XMAX - (XMAX - XMIN) / (2NX),
+                      length=NX))
+
+    wtrue = reshape(W0_TRUE_PROFILE, NX, NY)
+
+    fig = Figure(size=(1100, 650), fontsize=16)
+    ax = Axis(
+        fig[1, 1],
+        xlabel="x [m]",
+        ylabel="interface level w [m]",
+        title="Interface cross-section at middle of the domain",
+    )
+
+    lines!(ax, x, wtrue[:, jmid], linewidth=3, label="truth")
+
+    for r in results
+        wmat = reshape(r.w_final, NX, NY)
+        lines!(ax, x, wmat[:, jmid], label=String(r.name))
+    end
+
+    axislegend(ax, position=:rb)
+    save(filename, fig)
+    println("Saved interface cross-section figure to: $filename")
 end
 
 function plot_initial_condition_grid(initial_guesses; filename)
     panels = [(name, reshape(w0 .- W0_TRUE_PROFILE, NX, NY)) for (name, w0) in initial_guesses]
 
-    fig = Figure(size=(1100, 900), fontsize=16)
+    fig = Figure(size=(1250, 1000), fontsize=22)
     hm = nothing
     ncols_local = 2
 
@@ -1137,12 +1181,27 @@ function plot_initial_condition_grid(initial_guesses; filename)
         row = div(k - 1, ncols_local) + 1
         col = mod(k - 1, ncols_local) + 1
 
-        ax = Axis(fig[row, col], title="initial guess: $name")
+        ax = Axis(
+            fig[row, col],
+            title="initial guess: $name",
+            titlesize=24,
+        )
+
         hm = heatmap!(ax, field; colorrange=W_ERROR_RANGE, colormap=:RdBu)
         hidedecorations!(ax)
     end
 
-    Colorbar(fig[:, ncols_local + 1], hm, label="w₀ - w_true")
+    Colorbar(
+        fig[:, ncols_local + 1],
+        hm;
+        label="w₀ - w_true",
+        labelsize=22,
+        ticklabelsize=18,
+    )
+
+    colgap!(fig.layout, 18)
+    rowgap!(fig.layout, 18)
+
     save(filename, fig)
     println("Saved initial-condition figure to: $filename")
 end
@@ -1497,55 +1556,155 @@ function combine_finished_runs(initial_guesses)
     println("Saved validation-by-time to: $pertime_file")
     println("Saved combined RMSE time series to: $combined_rmse_file")
 
-    if MAKE_PLOTS
-        nplots = length(results) + 1
-        ncols = min(4, nplots)
-        nrows = cld(nplots, ncols)
+        if MAKE_PLOTS
+        # ---------------------------------------------------------------------
+        # Standard thesis plot styling
+        # ---------------------------------------------------------------------
+        plot_fontsize = 22
+        panel_title_size = 24
+        axis_label_size = 22
+        tick_label_size = 18
+        legend_label_size = 18
+        line_width = 3.5
+        marker_size = 10
 
+        # Use a consistent and thesis-friendly ordering in all combined plots.
+        desired_order = ["truth_medium", "flat_mid", "flat_low", "flat_high"]
+        plot_results = [r for name in desired_order for r in results if r.name == name]
+
+        # Add any remaining runs, in case extra guesses are included.
+        for r in results
+            if !(r.name in [pr.name for pr in plot_results])
+                push!(plot_results, r)
+            end
+        end
+
+        # ---------------------------------------------------------------------
+        # Initial interface errors
+        # ---------------------------------------------------------------------
         initial_file = joinpath(SAVE_DIR, "2D_predictive_skill_initial_conditions_combined.png")
-        plot_initial_condition_grid(initial_guesses; filename=initial_file)
-
-        fig_conv = Figure(size=(1200, 700), fontsize=16)
-        axc = Axis(
-            fig_conv[1, 1],
-            title="Predictive skill: convergence histories",
-            xlabel="recorded iteration",
-            ylabel="cost",
-            yscale=log10,
+        plot_initial_condition_grid(
+            [(r.name, r.w0) for r in plot_results];
+            filename=initial_file,
         )
 
-        for r in results
+        # ---------------------------------------------------------------------
+        # Convergence histories
+        # ---------------------------------------------------------------------
+        fig_conv = Figure(size=(1250, 750), fontsize=plot_fontsize)
+
+        axc = Axis(
+            fig_conv[1, 1],
+            title="Convergence histories",
+            xlabel="recorded iteration",
+            ylabel="objective value",
+            yscale=log10,
+            titlesize=panel_title_size,
+            xlabelsize=axis_label_size,
+            ylabelsize=axis_label_size,
+            xticklabelsize=tick_label_size,
+            yticklabelsize=tick_label_size,
+        )
+
+        for r in plot_results
             histfile = output_prefix(r.name) * "_history.csv"
+
             if isfile(histfile)
                 lines_csv = readlines(histfile)[2:end]
+
                 if !isempty(lines_csv)
                     its = Int[]
                     Js = Float64[]
+
                     for line in lines_csv
                         parts = split(line, ',')
                         push!(its, parse(Int, parts[1]))
                         push!(Js, parse(Float64, parts[3]))
                     end
-                    lines!(axc, its, Js, label=r.name)
-                    scatter!(axc, its, Js)
+
+                    lines!(axc, its, Js; linewidth=line_width, label=String(r.name))
+                    scatter!(axc, its, Js; markersize=marker_size)
                 end
             end
         end
 
-        axislegend(axc, position=:rc)
+        axislegend(
+            axc;
+            position=:rc,
+            labelsize=legend_label_size,
+            framevisible=true,
+        )
 
         conv_file = joinpath(SAVE_DIR, "2D_predictive_skill_convergence_combined.png")
         save(conv_file, fig_conv)
         println("Saved combined convergence figure to: $conv_file")
 
+        # ---------------------------------------------------------------------
+        # RMSE time series
+        # ---------------------------------------------------------------------
         rmse_plot_file = joinpath(SAVE_DIR, "2D_predictive_skill_rmse_timeseries_combined.png")
-        plot_rmse_time_series(
-            [(r.name, r.rmse_rows) for r in results];
-            filename=rmse_plot_file,
-            title="Velocity-vector RMSE against truth, t = 0--$(VALIDATION_END) s",
+
+        fig_rmse = Figure(size=(1250, 750), fontsize=plot_fontsize)
+
+        ax_rmse = Axis(
+            fig_rmse[1, 1],
+            title="Velocity-vector RMSE against truth",
+            xlabel="time [s]",
+            ylabel="RMSE",
+            yscale=log10,
+            titlesize=panel_title_size,
+            xlabelsize=axis_label_size,
+            ylabelsize=axis_label_size,
+            xticklabelsize=tick_label_size,
+            yticklabelsize=tick_label_size,
         )
 
-        int_panels = [(r.name, reshape(r.w_final .- W0_TRUE_PROFILE, NX, NY)) for r in results]
+        for r in plot_results
+            rows = r.rmse_rows
+            times = [row.time for row in rows]
+            uv = [row.uv_rmse for row in rows]
+
+            lines!(
+                ax_rmse,
+                times,
+                uv;
+                linewidth=line_width,
+                label=String(r.name),
+            )
+
+            obs_vals = [
+                uv[findfirst(t -> abs(t - tobs) < 1e-10, times)]
+                for tobs in OBS_TIMES
+            ]
+
+            scatter!(
+                ax_rmse,
+                OBS_TIMES,
+                obs_vals;
+                markersize=marker_size,
+            )
+        end
+
+        for tobs in OBS_TIMES
+            vlines!(ax_rmse, [tobs]; linestyle=:dash, linewidth=1.8)
+        end
+
+        ylims!(ax_rmse, 1e-6, 1e-2)
+
+        axislegend(
+            ax_rmse;
+            position=:rc,
+            labelsize=legend_label_size,
+            framevisible=true,
+        )
+
+        save(rmse_plot_file, fig_rmse)
+        println("Saved RMSE time-series figure to: $rmse_plot_file")
+
+        # ---------------------------------------------------------------------
+        # Calibrated interface error
+        # ---------------------------------------------------------------------
+        int_panels = [(r.name, reshape(r.w_final .- W0_TRUE_PROFILE, NX, NY)) for r in plot_results]
 
         int_file = joinpath(SAVE_DIR, "2D_predictive_skill_interface_error_combined.png")
         plot_error_heatmap_grid(
@@ -1554,22 +1713,82 @@ function combine_finished_runs(initial_guesses)
             title_prefix="interface error",
             colorbar_label="w - w_true",
             filename=int_file,
-            fig_size=(1100, 900),
+            fig_size=(1250, 1000),
+            fontsize=plot_fontsize,
             colorrange=W_ERROR_RANGE,
         )
 
-        train_u1_panels = [(r.name, r.snap.u1 .- truth_snap.u1) for r in results]
-        train_v1_panels = [(r.name, r.snap.v1 .- truth_snap.v1) for r in results]
-        train_speed_panels = [(r.name, r.snap.speed .- truth_snap.speed) for r in results]
+        # ---------------------------------------------------------------------
+        # Interface cross-section
+        # ---------------------------------------------------------------------
+        # Middle horizontal cross-section. For NX=NY=16, this uses j=8.
+        jmid = cld(NY, 2)
+
+        dx = (XMAX - XMIN) / NX
+        x = collect(range(XMIN + 0.5 * dx, XMAX - 0.5 * dx; length=NX))
+
+        wtrue = reshape(W0_TRUE_PROFILE, NX, NY)
+
+        fig_cross = Figure(size=(1250, 750), fontsize=plot_fontsize)
+
+        ax_cross = Axis(
+            fig_cross[1, 1],
+            title="Interface cross-section",
+            xlabel="x [m]",
+            ylabel="interface level w [m]",
+            titlesize=panel_title_size,
+            xlabelsize=axis_label_size,
+            ylabelsize=axis_label_size,
+            xticklabelsize=tick_label_size,
+            yticklabelsize=tick_label_size,
+        )
+
+        lines!(
+            ax_cross,
+            x,
+            wtrue[:, jmid];
+            linewidth=4.5,
+            label="truth",
+        )
+
+        for r in plot_results
+            wmat = reshape(r.w_final, NX, NY)
+            lines!(
+                ax_cross,
+                x,
+                wmat[:, jmid];
+                linewidth=line_width,
+                label=String(r.name),
+            )
+        end
+
+        axislegend(
+            ax_cross;
+            position=:rb,
+            labelsize=legend_label_size,
+            framevisible=true,
+        )
+
+        cross_file = joinpath(SAVE_DIR, "2D_predictive_skill_interface_cross_section.png")
+        save(cross_file, fig_cross)
+        println("Saved interface cross-section figure to: $cross_file")
+
+        # ---------------------------------------------------------------------
+        # Training-window velocity errors at t = T_END
+        # ---------------------------------------------------------------------
+        train_u1_panels = [(r.name, r.snap.u1 .- truth_snap.u1) for r in plot_results]
+        train_v1_panels = [(r.name, r.snap.v1 .- truth_snap.v1) for r in plot_results]
+        train_speed_panels = [(r.name, r.snap.speed .- truth_snap.speed) for r in plot_results]
 
         u1_file = joinpath(SAVE_DIR, "2D_predictive_skill_u1_error_t$(Int(round(T_END)))_combined.png")
         plot_error_heatmap_grid(
             train_u1_panels,
             item -> item[2];
-            title_prefix="u₁ error at t=$(T_END) s",
+            title_prefix="u₁ error at t=$(Int(round(T_END))) s",
             colorbar_label="u₁ - u₁,true",
             filename=u1_file,
-            fig_size=(1100, 900),
+            fig_size=(1250, 1000),
+            fontsize=plot_fontsize,
             colorrange=VEL_ERROR_RANGE,
         )
 
@@ -1577,10 +1796,11 @@ function combine_finished_runs(initial_guesses)
         plot_error_heatmap_grid(
             train_v1_panels,
             item -> item[2];
-            title_prefix="v₁ error at t=$(T_END) s",
+            title_prefix="v₁ error at t=$(Int(round(T_END))) s",
             colorbar_label="v₁ - v₁,true",
             filename=v1_file,
-            fig_size=(1100, 900),
+            fig_size=(1250, 1000),
+            fontsize=plot_fontsize,
             colorrange=VEL_ERROR_RANGE,
         )
 
@@ -1588,25 +1808,30 @@ function combine_finished_runs(initial_guesses)
         plot_error_heatmap_grid(
             train_speed_panels,
             item -> item[2];
-            title_prefix="speed error at t=$(T_END) s",
-            colorbar_label="|u₁| - |u₁,true|",
+            title_prefix="speed error at t=$(Int(round(T_END))) s",
+            colorbar_label="speed - speed_true",
             filename=speed_file,
-            fig_size=(1100, 900),
+            fig_size=(1250, 1000),
+            fontsize=plot_fontsize,
             colorrange=SPEED_ERROR_RANGE,
         )
 
+        # ---------------------------------------------------------------------
+        # Future velocity errors at final validation time
+        # ---------------------------------------------------------------------
         tval = VALIDATION_END
         truth_future = snapshot(W0_TRUE_PROFILE; label="truth", t=tval)
-        future_snaps = [(r.name, snapshot(r.w_final; label=r.name, t=tval)) for r in results]
+        future_snaps = [(r.name, snapshot(r.w_final; label=r.name, t=tval)) for r in plot_results]
 
         future_u1_file = joinpath(SAVE_DIR, "2D_predictive_skill_future_u1_error_t$(Int(round(tval)))_combined.png")
         plot_error_heatmap_grid(
             future_snaps,
             item -> item[2].u1 .- truth_future.u1;
-            title_prefix="future u₁ error at t=$(round(tval; digits=1)) s",
+            title_prefix="future u₁ error at t=$(Int(round(tval))) s",
             colorbar_label="u₁ - u₁,true",
             filename=future_u1_file,
-            fig_size=(1100, 900),
+            fig_size=(1250, 1000),
+            fontsize=plot_fontsize,
             colorrange=VEL_ERROR_RANGE,
         )
 
@@ -1614,10 +1839,11 @@ function combine_finished_runs(initial_guesses)
         plot_error_heatmap_grid(
             future_snaps,
             item -> item[2].v1 .- truth_future.v1;
-            title_prefix="future v₁ error at t=$(round(tval; digits=1)) s",
+            title_prefix="future v₁ error at t=$(Int(round(tval))) s",
             colorbar_label="v₁ - v₁,true",
             filename=future_v1_file,
-            fig_size=(1100, 900),
+            fig_size=(1250, 1000),
+            fontsize=plot_fontsize,
             colorrange=VEL_ERROR_RANGE,
         )
 
@@ -1625,13 +1851,13 @@ function combine_finished_runs(initial_guesses)
         plot_error_heatmap_grid(
             future_snaps,
             item -> item[2].speed .- truth_future.speed;
-            title_prefix="future speed error at t=$(round(tval; digits=1)) s",
-            colorbar_label="|u₁| - |u₁,true|",
+            title_prefix="future speed error at t=$(Int(round(tval))) s",
+            colorbar_label="speed - speed_true",
             filename=future_speed_file,
-            fig_size=(1100, 900),
+            fig_size=(1250, 1000),
+            fontsize=plot_fontsize,
             colorrange=SPEED_ERROR_RANGE,
         )
-
     end
 end
 

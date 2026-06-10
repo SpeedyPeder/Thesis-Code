@@ -601,11 +601,6 @@ ax_prof = Axis(
     title="8-point optimized interface profile",
     xlabel="x",
     ylabel="elevation",
-    titlesize=20,
-    xlabelsize=16,
-    ylabelsize=16,
-    xticklabelsize=12,
-    yticklabelsize=12,
 )
 
 lines!(
@@ -653,8 +648,6 @@ scatter!(
 axislegend(
     ax_prof,
     position=:rt,
-    labelsize=12,
-    patchsize=(20, 10),
 )
 
 
