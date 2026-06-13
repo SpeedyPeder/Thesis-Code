@@ -1014,11 +1014,18 @@ function plot_heatmap_grid(
     colormap=:viridis,
     symmetric=false,
     fig_size=nothing,
-    fontsize=18,
+    fontsize=26,
+    titlesize=28,
+    labelsize=26,
+    ticklabelsize=24,
+    colorbar_labelsize=38,
+    colorbar_ticklabelsize=32,
+    colorbar_width=42,
 )
     n = length(panels)
     ncols, nrows = panel_layout(n)
-    fig_size === nothing && (fig_size = (500 * ncols + 160, 430 * nrows))
+
+    fig_size === nothing && (fig_size = (560 * ncols + 220, 500 * nrows))
 
     all_values = reduce(vcat, [vec(values_fun(item)) for item in panels])
     clims = symmetric ? symmetric_colorrange(all_values) : (minimum(all_values), maximum(all_values))
@@ -1034,12 +1041,31 @@ function plot_heatmap_grid(
         col = mod(k - 1, ncols) + 1
 
         title = isempty(title_prefix) ? string(name) : "$title_prefix: $name"
-        ax = Axis(fig[row, col], title=title)
+
+        ax = Axis(
+            fig[row, col],
+            title=title,
+            titlesize=titlesize,
+            xlabelsize=labelsize,
+            ylabelsize=labelsize,
+            xticklabelsize=ticklabelsize,
+            yticklabelsize=ticklabelsize,
+        )
+
         hm = heatmap!(ax, field; colorrange=clims, colormap=colormap)
+
         hidedecorations!(ax)
     end
 
-    Colorbar(fig[:, ncols + 1], hm, label=colorbar_label)
+    Colorbar(
+        fig[:, ncols + 1],
+        hm,
+        label=colorbar_label,
+        labelsize=colorbar_labelsize,
+        ticklabelsize=colorbar_ticklabelsize,
+        width=colorbar_width,
+    )
+
     save(filename, fig)
     println("Saved figure to: $filename")
 end
@@ -1072,8 +1098,14 @@ function plot_problem_setup()
         title_prefix="",
         colormap=:viridis,
         symmetric=false,
-        fig_size=(1200, 900),
-        fontsize=18,
+        fig_size=(1500, 1050),
+        fontsize=26,
+        titlesize=28,
+        labelsize=26,
+        ticklabelsize=24,
+        colorbar_labelsize=38,
+        colorbar_ticklabelsize=32,
+        colorbar_width=42,
     )
 end
 
