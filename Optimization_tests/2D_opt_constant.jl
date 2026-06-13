@@ -617,182 +617,62 @@ function snapshot(wlevel; label="", t=T_END)
 
     obs = observable_fields(sim, eq, grid)
 
-    u1 = Array(obs.u1)
-    v1 = Array(obs.v1)
-
     return (;
         ε=Array(obs.ε),
         w=Array(obs.w),
         B=Array(obs.Bcell),
-        u1,
-        v1,
-        speed=sqrt.(u1.^2 .+ v1.^2),
+        u1=Array(obs.u1),
+        v1=Array(obs.v1),
         label,
         t,
     )
 end
 
 snaps = [
-    snapshot(W0_INIT_CONST; label="initial guess", t=0.0),
+    snapshot(W0_INIT_CONST; label="initial", t=0.0),
     snapshot(W0_TRUE_CONST; label="synthetic truth", t=T_END),
-    snapshot(w_opt; label="calibrated", t=T_END),
+    snapshot(w_opt; label="optimized", t=T_END),
 ]
-
-# -----------------------------------------------------------------------------
-# Plotting helpers
-# -----------------------------------------------------------------------------
-
-function finite_extrema(arrays...)
-    values = reduce(vcat, [vec(Float64.(A)) for A in arrays])
-    return (minimum(values), maximum(values))
-end
-
-function symmetric_extrema(arrays...; min_abs=eps(Float64))
-    values = reduce(vcat, [vec(Float64.(A)) for A in arrays])
-    vmax = max(maximum(abs.(values)), min_abs)
-    return (-vmax, vmax)
-end
-
-function add_velocity_arrows!(ax, u, v; stride=4, arrowsize=10, lengthscale=0.75)
-    xs = Float64[]
-    ys = Float64[]
-    us = Float64[]
-    vs = Float64[]
-
-    for j in 1:stride:NY, i in 1:stride:NX
-        speed = sqrt(u[i, j]^2 + v[i, j]^2)
-
-        if speed > 1e-12
-            push!(xs, i)
-            push!(ys, j)
-            push!(us, lengthscale * u[i, j] / speed)
-            push!(vs, lengthscale * v[i, j] / speed)
-        end
-    end
-
-    arrows!(
-        ax,
-        xs,
-        ys,
-        us,
-        vs;
-        arrowsize=arrowsize,
-        linewidth=1.5,
-        lengthscale=1.0,
-    )
-end
-
-function hide_axis!(ax)
-    hidedecorations!(ax)
-    hidespines!(ax)
-end
 
 # -----------------------------------------------------------------------------
 # Plotting
 # -----------------------------------------------------------------------------
 
-initial_snap = snaps[1]
-truth_snap = snaps[2]
-calib_snap = snaps[3]
+fig = Figure(size=(1700, 1200), fontsize=18)
 
-ε_clims = finite_extrema(initial_snap.ε, truth_snap.ε, calib_snap.ε)
-w_clims = finite_extrema(initial_snap.w, truth_snap.w, calib_snap.w)
-speed_clims = finite_extrema(initial_snap.speed, truth_snap.speed, calib_snap.speed)
-
-ε_err = calib_snap.ε .- truth_snap.ε
-w_err = calib_snap.w .- truth_snap.w
-speed_err = calib_snap.speed .- truth_snap.speed
-u_err = calib_snap.u1 .- truth_snap.u1
-v_err = calib_snap.v1 .- truth_snap.v1
-
-ε_err_clims = symmetric_extrema(ε_err)
-w_err_clims = symmetric_extrema(w_err)
-speed_err_clims = symmetric_extrema(speed_err)
-
-fig = Figure(size=(1800, 1350), fontsize=24)
-
-# Convergence row
 ax_conv = Axis(
     fig[1, 1:6],
     title="Convergence of interface parameter w₀",
-    xlabel="Iteration",
+    xlabel="iteration",
     ylabel="w₀",
-    titlesize=28,
-    xlabelsize=24,
-    ylabelsize=24,
-    xticklabelsize=22,
-    yticklabelsize=22,
 )
 
 lines!(ax_conv, hist.iter, hist.w0, label="recovered w₀")
 scatter!(ax_conv, hist.iter, hist.w0)
 hlines!(ax_conv, [W0_TRUE_CONST], linestyle=:dash, label="true w₀")
-axislegend(ax_conv, position=:rb, labelsize=22)
+axislegend(ax_conv, position=:rb)
 
-# -------------------------------------------------------------------------
-# Row 2: initial guess
-# -------------------------------------------------------------------------
+for (j, s) in enumerate(snaps)
+    row = j + 1
 
-row = 2
-s = initial_snap
+    speed_u1 = sqrt.(s.u1.^2 .+ s.v1.^2)
 
-ax_ε = Axis(fig[row, 1], title="Initial: free surface ε", titlesize=24)
-hm_ε = heatmap!(ax_ε, s.ε; colormap=:viridis, colorrange=ε_clims)
-Colorbar(fig[row, 2], hm_ε, label="ε", labelsize=28, ticklabelsize=24, width=28)
+    ax_ε = Axis(fig[row, 1], title="$(s.label): free surface ε, t=$(s.t)")
+    hm_ε = heatmap!(ax_ε, s.ε)
+    Colorbar(fig[row, 2], hm_ε)
 
-ax_w = Axis(fig[row, 3], title="Initial: interface w", titlesize=24)
-hm_w = heatmap!(ax_w, s.w; colormap=:viridis, colorrange=w_clims)
-Colorbar(fig[row, 4], hm_w, label="w", labelsize=28, ticklabelsize=24, width=28)
+    ax_w = Axis(fig[row, 3], title="$(s.label): interface w, t=$(s.t)")
+    hm_w = heatmap!(ax_w, s.w)
+    Colorbar(fig[row, 4], hm_w)
 
-ax_speed = Axis(fig[row, 5], title="Initial: upper-layer speed", titlesize=24)
-hm_speed = heatmap!(ax_speed, s.speed; colormap=:magma, colorrange=speed_clims)
-add_velocity_arrows!(ax_speed, s.u1, s.v1; stride=4)
-Colorbar(fig[row, 6], hm_speed, label="|u₁|", labelsize=28, ticklabelsize=24, width=28)
+    ax_speed = Axis(fig[row, 5], title="$(s.label): upper-layer speed, t=$(s.t)")
+    hm_speed = heatmap!(ax_speed, speed_u1)
+    Colorbar(fig[row, 6], hm_speed)
 
-foreach(hide_axis!, (ax_ε, ax_w, ax_speed))
-
-# -------------------------------------------------------------------------
-# Row 3: synthetic truth
-# -------------------------------------------------------------------------
-
-row = 3
-s = truth_snap
-
-ax_ε = Axis(fig[row, 1], title="Truth: free surface ε", titlesize=24)
-hm_ε = heatmap!(ax_ε, s.ε; colormap=:viridis, colorrange=ε_clims)
-Colorbar(fig[row, 2], hm_ε, label="ε", labelsize=28, ticklabelsize=24, width=28)
-
-ax_w = Axis(fig[row, 3], title="Truth: interface w", titlesize=24)
-hm_w = heatmap!(ax_w, s.w; colormap=:viridis, colorrange=w_clims)
-Colorbar(fig[row, 4], hm_w, label="w", labelsize=28, ticklabelsize=24, width=28)
-
-ax_speed = Axis(fig[row, 5], title="Truth: upper-layer speed", titlesize=24)
-hm_speed = heatmap!(ax_speed, s.speed; colormap=:magma, colorrange=speed_clims)
-add_velocity_arrows!(ax_speed, s.u1, s.v1; stride=4)
-Colorbar(fig[row, 6], hm_speed, label="|u₁|", labelsize=28, ticklabelsize=24, width=28)
-
-foreach(hide_axis!, (ax_ε, ax_w, ax_speed))
-
-# -------------------------------------------------------------------------
-# Row 4: calibrated error relative to truth
-# -------------------------------------------------------------------------
-
-row = 4
-
-ax_εerr = Axis(fig[row, 1], title="Calibrated − truth: ε", titlesize=24)
-hm_εerr = heatmap!(ax_εerr, ε_err; colormap=:RdBu, colorrange=ε_err_clims)
-Colorbar(fig[row, 2], hm_εerr, label="Δε", labelsize=28, ticklabelsize=24, width=28)
-
-ax_werr = Axis(fig[row, 3], title="Calibrated − truth: w", titlesize=24)
-hm_werr = heatmap!(ax_werr, w_err; colormap=:RdBu, colorrange=w_err_clims)
-Colorbar(fig[row, 4], hm_werr, label="Δw", labelsize=28, ticklabelsize=24, width=28)
-
-ax_speederr = Axis(fig[row, 5], title="Calibrated − truth: speed", titlesize=24)
-hm_speederr = heatmap!(ax_speederr, speed_err; colormap=:RdBu, colorrange=speed_err_clims)
-add_velocity_arrows!(ax_speederr, u_err, v_err; stride=4)
-Colorbar(fig[row, 6], hm_speederr, label="Δ|u₁|", labelsize=28, ticklabelsize=24, width=28)
-
-foreach(hide_axis!, (ax_εerr, ax_werr, ax_speederr))
+    hidedecorations!(ax_ε)
+    hidedecorations!(ax_w)
+    hidedecorations!(ax_speed)
+end
 
 display(fig)
 
